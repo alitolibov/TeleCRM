@@ -1,0 +1,24 @@
+{
+  "name": "@telecrm/tg-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "start": "node --env-file=../../.env dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@telecrm/shared": "workspace:*",
+    "bullmq": "^5.30.0",
+    "ioredis": "^5.4.1",
+    "prebuilt-tdlib": "^0.1008049.0",
+    "tdl": "^8.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
