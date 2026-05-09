@@ -7,7 +7,7 @@ let configured = false
 
 export function createTdlibClient() {
   if (!configured) {
-    tdl.configure({ tdjson: getTdjson() })
+    tdl.configure({ tdjson: getTdjson(), verbosityLevel: 1 })
     configured = true
   }
 

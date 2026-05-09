@@ -1,10 +1,13 @@
 import { APP_NAME } from '@telecrm/shared'
 import { config } from './config.js'
 import { createTdlibClient } from './tdlib.js'
-import { loginHandlers } from './auth.js'
+import { loginHandlers, closeReadline } from './auth.js'
+import { connectRedis, redis } from './redis.js'
+import { setupMessageHandler } from './messages.js'
+import { setupSender } from './sender.js'
+import { setupConnectionMonitor } from './connection.js'
 
 console.log(`[tg-worker] starting ${APP_NAME}...`)
-console.log(`[tg-worker] tdlib data dir: ${config.paths.tdlibDb}`)
 
 const client = createTdlibClient()
 
@@ -12,33 +15,35 @@ client.on('error', (err) => {
   console.error('[tg-worker] tdlib error:', err)
 })
 
-client.on('update', (update) => {
-  if (update._ === 'updateAuthorizationState') {
-    console.log('[tg-worker] auth state:', update.authorization_state._)
-  }
-  if (update._ === 'updateConnectionState') {
-    console.log('[tg-worker] connection:', update.state._)
-  }
-})
-
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
-  console.log(`[tg-worker] received ${signal}, closing TDLib...`)
-  try {
-    await client.close()
-  } catch (err) {
-    console.error('[tg-worker] close error:', err)
-  }
+  console.log(`[tg-worker] ${signal} — shutting down...`)
+  closeReadline()
+  await redis.quit().catch(() => {})
+  await client.close().catch(() => {})
   process.exit(0)
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 
-console.log('[tg-worker] starting login flow...')
-await client.login(loginHandlers(config.tg.phoneNumber))
+try {
+  await connectRedis()
+  await client.login(loginHandlers(config.tg.phoneNumber))
+  closeReadline()
 
-const me = await client.invoke({ _: 'getMe' })
-console.log(`[tg-worker] logged in as ${me.first_name} (${me.id})`)
+  const me = await client.invoke({ _: 'getMe' })
+  console.log(`[tg-worker] logged in as ${me.first_name} (id: ${me.id})`)
+
+  setupConnectionMonitor(client)
+  setupMessageHandler(client)
+  setupSender(client)
+
+  console.log('[tg-worker] ready — listening for messages...')
+} catch (err) {
+  console.error('[tg-worker] fatal error:', err)
+  closeReadline()
+  process.exit(1)
+}
