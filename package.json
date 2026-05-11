@@ -14,6 +14,9 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["argon2", "@nestjs/core", "esbuild"]
+  },
   "devDependencies": {
     "turbo": "^2.3.3",
     "typescript": "^5.7.2"
