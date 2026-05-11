@@ -7,6 +7,7 @@ export const REDIS_CHANNELS = {
 
 export const REDIS_QUEUES = {
   tgOutgoing: 'tg-outgoing',
+  tgIncoming: 'tg-incoming',
 } as const
 
 export type { TgIncomingEvent, TgMessageContent, TgConnectionEvent } from './events.js'

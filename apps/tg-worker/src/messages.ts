@@ -1,6 +1,17 @@
+import { Queue } from 'bullmq'
 import type { TgMessageContent, TgIncomingEvent } from '@telecrm/shared'
-import { REDIS_CHANNELS } from '@telecrm/shared'
-import { redis } from './redis.js'
+import { REDIS_QUEUES } from '@telecrm/shared'
+import { config } from './config.js'
+
+function buildRedisConnection() {
+  const url = new URL(config.redis.url)
+  return { host: url.hostname, port: Number(url.port) || 6379 }
+}
+
+const incomingQueue = new Queue<TgIncomingEvent>(REDIS_QUEUES.tgIncoming, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
+})
 
 const botCache = new Map<number, boolean>()
 
@@ -98,7 +109,10 @@ export function setupMessageHandler(client: any) {
       date: msg.date,
     }
 
-    await redis.publish(REDIS_CHANNELS.tgIncoming, JSON.stringify(event))
+    // jobId = chatId-messageId ensures deduplication if TDLib replays backlog
+    await incomingQueue.add('incoming', event, {
+      jobId: `${event.chatId}-${event.messageId}`,
+    })
 
     const preview = event.content.type === 'text'
       ? event.content.text.slice(0, 60)
