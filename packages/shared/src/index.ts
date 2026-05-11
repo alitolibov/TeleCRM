@@ -6,5 +6,8 @@ export const REDIS_CHANNELS = {
 } as const
 
 export const REDIS_QUEUES = {
-  tgOutgoing: 'tg:outgoing',
+  tgOutgoing: 'tg-outgoing',
 } as const
+
+export type { TgIncomingEvent, TgMessageContent, TgConnectionEvent } from './events.js'
+export type { TgOutgoingJob, TgOutgoingContent } from './jobs.js'

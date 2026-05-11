@@ -1,11 +1,42 @@
+# dependencies
 node_modules/
+
+# build outputs
 dist/
 .nuxt/
 .output/
 .turbo/
+
+# env files (keep only .env.example)
 .env
-.env.local
+.env.*
+!.env.example
+
+# TDLib session & media (sensitive, machine-specific)
 data/
+
+# logs
 *.log
+pnpm-debug.log*
+npm-debug.log*
+
+# OS
 .DS_Store
+Thumbs.db
+
+# TypeScript
 *.tsbuildinfo
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Nuxt
+.nuxt/
+.output/
