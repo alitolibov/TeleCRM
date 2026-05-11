@@ -13,17 +13,16 @@ const incomingQueue = new Queue<TgIncomingEvent>(REDIS_QUEUES.tgIncoming, {
   defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
 })
 
-const botCache = new Map<number, boolean>()
+const userCache = new Map<number, any>()
 
-async function isBotUser(client: any, userId: number): Promise<boolean> {
-  if (botCache.has(userId)) return botCache.get(userId)!
+async function getTgUser(client: any, userId: number): Promise<any | null> {
+  if (userCache.has(userId)) return userCache.get(userId)
   try {
     const user = await client.invoke({ _: 'getUser', user_id: userId })
-    const result = user.type._ === 'userTypeBot'
-    botCache.set(userId, result)
-    return result
+    userCache.set(userId, user)
+    return user
   } catch {
-    return false
+    return null
   }
 }
 
@@ -98,13 +97,16 @@ export function setupMessageHandler(client: any) {
 
     const senderId: number = msg.sender_id.user_id
 
-    // skip bots
-    if (await isBotUser(client, senderId)) return
+    const tgUser = await getTgUser(client, senderId)
+    if (!tgUser || tgUser.type._ === 'userTypeBot') return
 
     const event: TgIncomingEvent = {
       chatId: msg.chat_id,
       messageId: msg.id,
       senderId,
+      senderFirstName: tgUser.first_name || 'Unknown',
+      senderLastName: tgUser.last_name || undefined,
+      senderUsername: tgUser.usernames?.active_usernames?.[0] ?? tgUser.username ?? undefined,
       content: parseContent(msg.content),
       date: msg.date,
     }

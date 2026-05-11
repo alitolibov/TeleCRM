@@ -7,6 +7,7 @@ export const senderType = pgEnum('sender_type', ['client', 'manager', 'system'])
 export const contentType = pgEnum('content_type', [
   'text', 'photo', 'video', 'voice', 'document', 'sticker', 'unsupported',
 ])
+export type ContentType = typeof contentType.enumValues[number]
 export const messageStatus = pgEnum('message_status', ['sending', 'sent', 'failed'])
 export const clientStatus = pgEnum('client_status', [
   'thinking', 'consulting', 'waiting_price', 'booked', 'bought',

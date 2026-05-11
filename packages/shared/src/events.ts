@@ -1,7 +1,10 @@
 export interface TgIncomingEvent {
   chatId: number
   messageId: number
-  senderId: number | null
+  senderId: number
+  senderFirstName: string
+  senderLastName?: string
+  senderUsername?: string
   content: TgMessageContent
   date: number
 }
