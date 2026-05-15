@@ -13,6 +13,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     BullModule.registerQueue(
       { name: REDIS_QUEUES.tgIncoming },
       { name: REDIS_QUEUES.tgOutgoing },
+      { name: REDIS_QUEUES.tgHistoryRequest },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],

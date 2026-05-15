@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nest build",
-    "dev": "nest start --watch",
+    "dev": "rm -f tsconfig.build.tsbuildinfo && nest start --watch",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

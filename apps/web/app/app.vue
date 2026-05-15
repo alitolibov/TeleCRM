@@ -1,19 +1,13 @@
-<script setup lang="ts">
-const config = useRuntimeConfig()
-</script>
-
 <template>
-  <div class="container">
-    <h1>TeleCRM</h1>
-    <p>API: {{ config.public.apiUrl }}</p>
+  <div :data-theme="theme" style="height: 100%">
+    <NuxtLayout>
+      <NuxtPage />
+    </NuxtLayout>
+    <Toast position="top-right" />
   </div>
 </template>
 
-<style>
-.container {
-  font-family: system-ui, sans-serif;
-  padding: 2rem;
-  max-width: 960px;
-  margin: 0 auto;
-}
-</style>
+<script setup lang="ts">
+const theme = useCookie('theme', { default: () => 'light' })
+provide('theme', theme)
+</script>

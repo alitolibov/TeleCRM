@@ -9,7 +9,12 @@ async function bootstrap() {
 
   app.use(cookieParser())
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }))
-  app.enableCors({ origin: process.env.WEB_URL ?? 'http://localhost:3001', credentials: true })
+  const allowedOrigins = (process.env.WEB_URL ?? 'http://localhost:3001').split(',').map(o => o.trim())
+  app.enableCors({
+    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) =>
+      cb(null, !origin || allowedOrigins.includes(origin)),
+    credentials: true,
+  })
 
   const port = Number(process.env.API_PORT ?? 3000)
   await app.listen(port)

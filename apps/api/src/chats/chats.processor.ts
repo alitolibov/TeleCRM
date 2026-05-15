@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq'
 import { Job } from 'bullmq'
-import type { TgIncomingEvent } from '@telecrm/shared'
+import type { TgMessageEvent } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { ChatsService } from './chats.service'
 
@@ -10,7 +10,7 @@ export class ChatsProcessor extends WorkerHost {
     super()
   }
 
-  async process(job: Job<TgIncomingEvent>): Promise<void> {
+  async process(job: Job<TgMessageEvent>): Promise<void> {
     await this.chatsService.processIncomingEvent(job.data)
   }
 }

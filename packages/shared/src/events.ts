@@ -1,13 +1,19 @@
-export interface TgIncomingEvent {
+export interface TgMessageEvent {
   chatId: number
   messageId: number
-  senderId: number
-  senderFirstName: string
-  senderLastName?: string
-  senderUsername?: string
+  isOutgoing: boolean
+  client: {
+    telegramId: number
+    firstName: string
+    lastName?: string
+    username?: string
+  }
   content: TgMessageContent
   date: number
 }
+
+/** @deprecated use TgMessageEvent */
+export type TgIncomingEvent = TgMessageEvent
 
 export type TgMessageContent =
   | { type: 'text'; text: string }

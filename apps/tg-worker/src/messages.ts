@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq'
-import type { TgMessageContent, TgIncomingEvent } from '@telecrm/shared'
+import type { TgMessageContent, TgMessageEvent } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
 
@@ -8,25 +8,34 @@ function buildRedisConnection() {
   return { host: url.hostname, port: Number(url.port) || 6379 }
 }
 
-const incomingQueue = new Queue<TgIncomingEvent>(REDIS_QUEUES.tgIncoming, {
+const messageQueue = new Queue<TgMessageEvent>(REDIS_QUEUES.tgIncoming, {
   connection: buildRedisConnection(),
   defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
 })
 
 const userCache = new Map<number, any>()
 
-async function getTgUser(client: any, userId: number): Promise<any | null> {
+export async function getTgUser(client: any, userId: number): Promise<any | null> {
   if (userCache.has(userId)) return userCache.get(userId)
   try {
     const user = await client.invoke({ _: 'getUser', user_id: userId })
     userCache.set(userId, user)
     return user
   } catch {
-    return null
+    // User not in TDLib's cache — fetching the chat populates it
+    try {
+      await client.invoke({ _: 'getChat', chat_id: userId })
+      const user = await client.invoke({ _: 'getUser', user_id: userId })
+      userCache.set(userId, user)
+      return user
+    } catch (e) {
+      console.warn(`[tg-worker] cannot resolve user ${userId}:`, (e as Error).message)
+      return null
+    }
   }
 }
 
-function parseContent(tdContent: any): TgMessageContent {
+export function parseContent(tdContent: any): TgMessageContent {
   switch (tdContent._) {
     case 'messageText':
       return { type: 'text', text: tdContent.text.text }
@@ -80,45 +89,109 @@ function parseContent(tdContent: any): TgMessageContent {
   }
 }
 
+/**
+ * Pulls the user's recent private chats from TDLib and seeds them as the
+ * chat's last message in our queue. Without this, the CRM only sees chats
+ * that received messages while the worker was running.
+ */
+export async function syncChats(client: any, limit: number = 100): Promise<void> {
+  try {
+    // Ensure TDLib has loaded the main chat list
+    await client.invoke({ _: 'loadChats', chat_list: { _: 'chatListMain' }, limit }).catch(() => {})
+
+    const result = await client.invoke({
+      _: 'getChats',
+      chat_list: { _: 'chatListMain' },
+      limit,
+    })
+    const chatIds: number[] = result.chat_ids ?? []
+
+    let synced = 0, skipped = 0
+    for (const chatId of chatIds) {
+      // private chats only
+      if (chatId <= 0) { skipped++; continue }
+
+      try {
+        const chatInfo = await client.invoke({ _: 'getChat', chat_id: chatId })
+        const lastMsg = chatInfo.last_message
+        if (!lastMsg) { skipped++; continue }
+
+        // service messages have non-user senders
+        if (lastMsg.sender_id?._ !== 'messageSenderUser') { skipped++; continue }
+
+        const user = await getTgUser(client, chatId)
+        if (!user || user.type._ === 'userTypeBot') { skipped++; continue }
+
+        const event: TgMessageEvent = {
+          chatId,
+          messageId: lastMsg.id,
+          isOutgoing: !!lastMsg.is_outgoing,
+          client: {
+            telegramId: chatId,
+            firstName: user.first_name || 'Unknown',
+            lastName: user.last_name || undefined,
+            username: user.usernames?.active_usernames?.[0] ?? user.username ?? undefined,
+          },
+          content: parseContent(lastMsg.content),
+          date: lastMsg.date,
+        }
+
+        await messageQueue.add('sync', event, {
+          jobId: `${event.chatId}-${event.messageId}`,
+        })
+        synced++
+      } catch (e) {
+        skipped++
+      }
+    }
+
+    console.log(`[tg-worker] sync: ${synced} chats queued, ${skipped} skipped, ${chatIds.length} total`)
+  } catch (err) {
+    console.error('[tg-worker] syncChats error:', (err as Error).message)
+  }
+}
+
 export function setupMessageHandler(client: any) {
   client.on('update', async (update: any) => {
     if (update._ !== 'updateNewMessage') return
 
-    const msg = (update as any).message
+    const msg = update.message
 
     // private chats only — group/channel IDs are negative
     if (msg.chat_id <= 0) return
 
-    // skip our own outgoing messages
-    if (msg.is_outgoing) return
+    // skip messages sent on behalf of a channel/chat (extremely rare in 1-on-1)
+    if (msg.sender_id?._ === 'messageSenderChat') return
 
-    // only user senders (not anonymous/channel)
-    if (msg.sender_id._ !== 'messageSenderUser') return
+    const isOutgoing = !!msg.is_outgoing
 
-    const senderId: number = msg.sender_id.user_id
+    // In private chats, chat_id == other party's user_id (the client)
+    const clientUser = await getTgUser(client, msg.chat_id)
+    if (!clientUser || clientUser.type._ === 'userTypeBot') return
 
-    const tgUser = await getTgUser(client, senderId)
-    if (!tgUser || tgUser.type._ === 'userTypeBot') return
-
-    const event: TgIncomingEvent = {
+    const event: TgMessageEvent = {
       chatId: msg.chat_id,
       messageId: msg.id,
-      senderId,
-      senderFirstName: tgUser.first_name || 'Unknown',
-      senderLastName: tgUser.last_name || undefined,
-      senderUsername: tgUser.usernames?.active_usernames?.[0] ?? tgUser.username ?? undefined,
+      isOutgoing,
+      client: {
+        telegramId: msg.chat_id,
+        firstName: clientUser.first_name || 'Unknown',
+        lastName: clientUser.last_name || undefined,
+        username: clientUser.usernames?.active_usernames?.[0] ?? clientUser.username ?? undefined,
+      },
       content: parseContent(msg.content),
       date: msg.date,
     }
 
     // jobId = chatId-messageId ensures deduplication if TDLib replays backlog
-    await incomingQueue.add('incoming', event, {
+    await messageQueue.add('message', event, {
       jobId: `${event.chatId}-${event.messageId}`,
     })
 
     const preview = event.content.type === 'text'
       ? event.content.text.slice(0, 60)
       : `[${event.content.type}]`
-    console.log(`[tg-worker] → chat ${event.chatId}: ${preview}`)
+    const arrow = isOutgoing ? '←' : '→'
+    console.log(`[tg-worker] ${arrow} chat ${event.chatId}: ${preview}`)
   })
 }

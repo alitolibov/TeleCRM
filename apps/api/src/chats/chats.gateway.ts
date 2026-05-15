@@ -6,12 +6,16 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from '@nestjs/websockets'
-import { UseGuards } from '@nestjs/common'
 import { Server, Socket } from 'socket.io'
 import { JwtService } from '@nestjs/jwt'
 import { ConfigService } from '@nestjs/config'
 
-@WebSocketGateway({ cors: { origin: '*', credentials: true } })
+@WebSocketGateway({
+  cors: {
+    origin: (process.env.WEB_URL ?? 'http://localhost:3001').split(',').map(o => o.trim()),
+    credentials: true,
+  },
+})
 export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server
@@ -32,13 +36,15 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       socket.data.userId = payload.sub
       socket.data.role = payload.role
       socket.join(`user:${payload.sub}`)
-    } catch {
+      console.log(`[ws] connected user=${payload.sub} role=${payload.role}`)
+    } catch (e) {
+      console.warn('[ws] auth failed, disconnecting')
       socket.disconnect()
     }
   }
 
   handleDisconnect(socket: Socket) {
-    // cleanup handled by socket.io automatically
+    if (socket.data.userId) console.log(`[ws] disconnected user=${socket.data.userId}`)
   }
 
   @SubscribeMessage('join:chat')
@@ -51,8 +57,10 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     socket.leave(`chat:${chatId}`)
   }
 
-  emitNewMessage(chatId: string, payload: unknown) {
-    this.server.to(`chat:${chatId}`).emit('message:new', payload)
+  // Broadcast — every connected manager should see new messages so chat list
+  // stays in sync, not only when they've opened a specific chat.
+  emitNewMessage(_chatId: string, payload: unknown) {
+    this.server.emit('message:new', payload)
   }
 
   emitChatUpdated(chat: unknown) {

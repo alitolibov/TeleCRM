@@ -1,0 +1,106 @@
+export interface ChatClient {
+  id: string
+  telegramId: number
+  firstName: string
+  lastName?: string
+  username?: string
+}
+
+export interface ChatMessage {
+  id: string
+  chatId: string
+  telegramMessageId: number
+  senderType: 'client' | 'manager' | 'system'
+  contentType: string
+  content: any
+  isRead: boolean
+  createdAt: string
+}
+
+export interface Chat {
+  id: string
+  status: 'new' | 'active' | 'closed'
+  unreadCount: number
+  lastMessageAt: string | null
+  createdAt: string
+  client: ChatClient
+  assignedUser?: { id: string; firstName: string; username: string } | null
+  messages?: ChatMessage[]
+}
+
+export const useChatsStore = defineStore('chats', () => {
+  const chats = ref<Chat[]>([])
+  const activeChat = ref<Chat | null>(null)
+  const messages = ref<ChatMessage[]>([])
+
+  const totalUnread = computed(() => chats.value.reduce((s, c) => s + (c.unreadCount ?? 0), 0))
+
+  function setChats(data: Chat[]) { chats.value = data }
+
+  function setActiveChat(chat: Chat) {
+    activeChat.value = chat
+    messages.value = chat.messages ?? []
+  }
+
+  function markActiveChatRead() {
+    const chat = chats.value.find(c => c.id === activeChat.value?.id)
+    if (chat) chat.unreadCount = 0
+  }
+
+  function handleNewMessage(msg: ChatMessage & { client: ChatClient }) {
+    if (activeChat.value?.id === msg.chatId && !messages.value.some(m => m.id === msg.id)) {
+      messages.value = [...messages.value, msg]
+    }
+    const chat = chats.value.find(c => c.id === msg.chatId)
+    if (chat) {
+      chat.lastMessageAt = msg.createdAt
+      if (activeChat.value?.id !== msg.chatId && msg.senderType === 'client') {
+        chat.unreadCount++
+      }
+      chats.value = [chat, ...chats.value.filter(c => c.id !== msg.chatId)]
+    } else if (msg.client) {
+      // Incoming message for a chat we don't have in our list yet — fetch full chat
+      // info on next chat:new event. For now, add a minimal placeholder.
+    }
+  }
+
+  function handleChatUpdated(data: Partial<Chat> & { id: string }) {
+    const idx = chats.value.findIndex(c => c.id === data.id)
+    if (idx !== -1) chats.value[idx] = { ...chats.value[idx], ...data } as Chat
+    if (activeChat.value?.id === data.id) activeChat.value = { ...activeChat.value, ...data } as Chat
+  }
+
+  function handleNewChat(chat: Chat) {
+    if (!chats.value.find(c => c.id === chat.id)) chats.value.unshift(chat)
+  }
+
+  function addMessage(msg: ChatMessage) {
+    if (!messages.value.some(m => m.id === msg.id)) {
+      messages.value = [...messages.value, msg]
+    }
+    const chat = chats.value.find(c => c.id === msg.chatId)
+    if (chat) {
+      chat.lastMessageAt = msg.createdAt
+      chats.value = [chat, ...chats.value.filter(c => c.id !== msg.chatId)]
+    }
+  }
+
+  /** Insert older messages at the top of the list, sorted chronologically. */
+  function prependMessages(msgs: ChatMessage[]) {
+    if (msgs.length === 0) return 0
+    const existing = new Set(messages.value.map(m => m.id))
+    const fresh = msgs.filter(m => !existing.has(m.id))
+    if (fresh.length === 0) return 0
+    const merged = [...fresh, ...messages.value]
+    merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    messages.value = merged
+    return fresh.length
+  }
+
+  return {
+    chats, activeChat, messages, totalUnread,
+    setChats, setActiveChat, markActiveChatRead,
+    handleNewMessage, handleChatUpdated, handleNewChat,
+    addMessage, prependMessages,
+  }
+})

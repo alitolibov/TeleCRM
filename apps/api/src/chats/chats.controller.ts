@@ -59,4 +59,15 @@ export class ChatsController {
   ) {
     return this.chatsService.sendMessage(id, dto.text, user.id)
   }
+
+  @Post(':id/sync-history')
+  syncHistory(
+    @Param('id') id: string,
+    @Query('before') before?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const beforeTgId = before ? Number(before) : 0
+    const lim = limit ? Math.min(Number(limit), 100) : 50
+    return this.chatsService.syncHistory(id, beforeTgId, lim)
+  }
 }
