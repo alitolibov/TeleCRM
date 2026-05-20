@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-8h}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-30d}
+      WEB_URL: ${WEB_URL}
+      API_PORT: 3000
+    volumes:
+      - tdlib_data:/data            # so /files/* can serve TDLib-downloaded media
+      - uploads_data:/tmp/telecrm-uploads
+
+  tg-worker:
+    build:
+      context: .
+      dockerfile: apps/tg-worker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis: { condition: service_healthy }
+    environment:
+      REDIS_URL: redis://redis:6379
+      TG_API_ID: ${TG_API_ID}
+      TG_API_HASH: ${TG_API_HASH}
+      TG_PHONE_NUMBER: ${TG_PHONE_NUMBER}
+    volumes:
+      - tdlib_data:/data            # TDLib binlog + downloaded media
+    stdin_open: true                # required for interactive SMS-code prompt on first run
+    tty: true
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NUXT_PUBLIC_API_URL: ${PUBLIC_API_URL}
+        NUXT_PUBLIC_WS_URL:  ${PUBLIC_WS_URL}
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN}
+    depends_on:
+      - api
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:
+  tdlib_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:

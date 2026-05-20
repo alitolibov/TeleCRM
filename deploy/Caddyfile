@@ -1,0 +1,12 @@
+# Web (Nuxt SPA)
+{$WEB_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy web:3001
+}
+
+# API (NestJS + WebSocket)
+{$API_DOMAIN} {
+    encode zstd gzip
+    # WebSocket needs upgrade handling — Caddy does this automatically
+    reverse_proxy api:3000
+}
