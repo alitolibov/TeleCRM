@@ -20,48 +20,53 @@
 
       <form @submit.prevent="submit" class="flex flex-col gap-5">
         <div class="flex flex-col gap-2">
-          <label class="form-label">Имя пользователя</label>
-          <InputText
+          <label class="field-label">Имя пользователя</label>
+          <BaseInput
             v-model="username"
             placeholder="admin"
             autocomplete="username"
             :disabled="pending"
-            size="large"
-            class="!w-full"
           />
         </div>
 
         <div class="flex flex-col gap-2">
-          <label class="form-label">Пароль</label>
-          <Password
+          <label class="field-label">Пароль</label>
+          <BaseInput
             v-model="password"
+            :type="showPassword ? 'text' : 'password'"
             placeholder="••••••••"
-            :feedback="false"
-            toggleMask
+            autocomplete="current-password"
             :disabled="pending"
-            size="large"
-            inputClass="!w-full"
-            class="!w-full"
-          />
+          >
+            <template #suffix>
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                @click="showPassword = !showPassword"
+              >
+                <i :class="showPassword ? 'pi pi-eye-slash' : 'pi pi-eye'" />
+              </button>
+            </template>
+          </BaseInput>
         </div>
 
         <Message v-if="error" severity="error" :closable="false" class="!mt-1 !text-sm">
           {{ error }}
         </Message>
 
-        <button
+        <BaseButton
           type="submit"
-          class="submit-btn"
-          :disabled="pending"
+          variant="primary"
+          size="lg"
+          class="!w-full !mt-3"
+          :loading="pending"
         >
-          <span v-if="pending" class="flex items-center gap-2">
-            <i class="pi pi-spin pi-spinner" /> Вход...
-          </span>
-          <span v-else class="flex items-center justify-center gap-2">
+          <span class="flex items-center justify-center gap-2">
             Войти
-            <i class="pi pi-arrow-right text-sm" />
+            <i v-if="!pending" class="pi pi-arrow-right text-sm" />
           </span>
-        </button>
+        </BaseButton>
       </form>
     </div>
   </div>
@@ -73,6 +78,7 @@ definePageMeta({ layout: 'auth' })
 const { login } = useAuth()
 const username = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const pending = ref(false)
 const error = ref('')
 
@@ -119,72 +125,22 @@ async function submit() {
   box-shadow: 0 8px 20px color-mix(in srgb, var(--p-primary-color) 35%, transparent);
 }
 
-.form-label {
+.field-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--p-surface-700);
   letter-spacing: 0.01em;
 }
 
-/* Make PrimeVue large inputs feel even more comfortable */
-:deep(.p-inputtext),
-:deep(.p-password-input) {
-  padding: 12px 14px !important;
-  font-size: 15px !important;
-  border-radius: 12px !important;
-  width: 100% !important;
-}
-:deep(.p-password) {
-  width: 100%;
-  position: relative;
-}
-/* Center the eye toggle vertically inside the now-taller input */
-:deep(.p-password .p-password-toggle-mask-icon),
-:deep(.p-password-toggle-mask-icon) {
-  position: absolute !important;
-  top: 50% !important;
-  right: 14px !important;
-  transform: translateY(-50%) !important;
-  margin: 0 !important;
-}
-/* Give the password input room for the eye icon on the right */
-:deep(.p-password .p-password-input) {
-  padding-right: 42px !important;
-}
-
-.submit-btn {
-  width: 100%;
-  margin-top: 12px;
-  padding: 14px 18px;
-  font-size: 15px;
-  font-weight: 700;
-  border-radius: 12px;
-  color: #ffffff;
-  background: linear-gradient(135deg, var(--p-primary-color) 0%, #a78bfa 100%);
-  box-shadow:
-    0 6px 16px color-mix(in srgb, var(--p-primary-color) 35%, transparent),
-    0 1px 0 rgba(255, 255, 255, 0.1) inset;
-  transition: transform 0.12s ease, box-shadow 0.18s ease, filter 0.12s ease;
-  cursor: pointer;
+.eye-btn {
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: 9999px;
+  color: var(--p-surface-500);
+  cursor: pointer;
 }
-.submit-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow:
-    0 10px 24px color-mix(in srgb, var(--p-primary-color) 42%, transparent),
-    0 1px 0 rgba(255, 255, 255, 0.15) inset;
-  filter: brightness(1.05);
-}
-.submit-btn:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow:
-    0 3px 10px color-mix(in srgb, var(--p-primary-color) 30%, transparent),
-    0 1px 0 rgba(255, 255, 255, 0.1) inset;
-}
-.submit-btn:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
+.eye-btn:hover { background: var(--p-surface-100); color: var(--p-surface-800); }
 </style>

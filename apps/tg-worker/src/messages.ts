@@ -72,6 +72,14 @@ export function parseContent(tdContent: any): TgMessageContent {
         duration: tdContent.voice_note.duration,
       }
 
+    case 'messageVideoNote':
+      return {
+        type: 'videoNote',
+        fileId: tdContent.video_note.video.id,
+        duration: tdContent.video_note.duration,
+        length: tdContent.video_note.length,
+      }
+
     case 'messageDocument':
       return {
         type: 'document',
@@ -199,6 +207,17 @@ export function setupMessageHandler(client: any, myUserId: number) {
     const clientUser = await getTgUser(client, msg.chat_id)
     if (!clientUser || clientUser.type._ === 'userTypeBot') return
 
+    // For incoming messages, ask TDLib for its authoritative unread_count.
+    // This avoids race conditions where updateChatReadInbox arrives before our
+    // own increment, resulting in CRM showing one more than Telegram.
+    let unreadCount: number | undefined
+    if (!isOutgoing) {
+      try {
+        const chatInfo = await client.invoke({ _: 'getChat', chat_id: msg.chat_id })
+        unreadCount = chatInfo?.unread_count
+      } catch {}
+    }
+
     const event: TgMessageEvent = {
       chatId: msg.chat_id,
       messageId: msg.id,
@@ -211,6 +230,7 @@ export function setupMessageHandler(client: any, myUserId: number) {
       },
       content: parseContent(msg.content),
       date: msg.date,
+      unreadCount,
     }
 
     // jobId = chatId-messageId ensures deduplication if TDLib replays backlog

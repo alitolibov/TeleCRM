@@ -62,6 +62,11 @@ export class ChatsController {
     return this.chatsService.getClientInfo(id)
   }
 
+  @Patch(':id/reopen')
+  reopen(@Param('id') id: string, @CurrentUser() user: { id: string }) {
+    return this.chatsService.reopen(id, user.id)
+  }
+
   @Patch(':id/read')
   @HttpCode(HttpStatus.NO_CONTENT)
   markRead(@Param('id') id: string) {

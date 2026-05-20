@@ -128,6 +128,15 @@
             outlined
             @click="handleClose"
           />
+          <Button
+            v-if="activeChat.status === 'closed'"
+            label="Взять обратно"
+            icon="pi pi-refresh"
+            size="small"
+            severity="primary"
+            outlined
+            @click="handleReopen"
+          />
         </div>
       </header>
 
@@ -212,6 +221,25 @@
                 </div>
                 <div v-if="msg.content.caption" class="bubble-text mt-1.5">
                   {{ msg.content.caption }}<span class="bubble-meta-inline">{{ formatMessageTime(msg.createdAt) }}</span>
+                </div>
+              </template>
+
+              <template v-else-if="msg.content?.type === 'videoNote'">
+                <div class="video-note" @click="toggleVideoNote">
+                  <video
+                    :src="fileUrl(msg.content.fileId)"
+                    playsinline
+                    loop
+                    muted
+                    autoplay
+                    preload="metadata"
+                    class="video-note-player"
+                  />
+                  <span class="video-note-meta">
+                    <i class="pi pi-volume-up text-[10px]" />
+                    {{ formatVideoDuration(msg.content.duration) }}
+                  </span>
+                  <span class="video-note-time">{{ formatMessageTime(msg.createdAt) }}</span>
                 </div>
               </template>
 
@@ -342,10 +370,6 @@
             <dt class="text-surface-500">Первое обращение</dt>
             <dd class="font-semibold">{{ formatDate(clientInfo.firstContactAt) }}</dd>
           </div>
-          <div v-if="clientInfo" class="flex justify-between items-center text-[13px]">
-            <dt class="text-surface-500">Обращений</dt>
-            <dd class="font-semibold">{{ clientInfo.totalDialogs }}</dd>
-          </div>
           <div v-if="clientInfo?.assignedUser" class="flex justify-between items-center text-[13px]">
             <dt class="text-surface-500">Менеджер</dt>
             <dd class="font-semibold flex items-center gap-1.5">
@@ -386,26 +410,35 @@
         </div>
       </div>
 
-      <div v-if="clientInfo?.history?.length" class="info-divider" />
+      <div v-if="clientInfo?.timeline?.length" class="info-divider" />
 
-      <!-- History -->
-      <div v-if="clientInfo?.history?.length" class="px-5 py-4">
+      <!-- History timeline -->
+      <div v-if="clientInfo?.timeline?.length" class="px-5 py-4">
         <div class="info-title">История</div>
         <ul class="mt-3 space-y-3.5">
-          <li v-for="(h, i) in clientInfo.history.slice().reverse()" :key="h.chatId" class="flex gap-3">
-            <span class="history-dot" :class="`status-dot-${h.clientStatus}`" />
+          <li v-for="(t, idx) in clientInfo.timeline" :key="idx" class="flex gap-3">
+            <span
+              class="history-dot"
+              :class="t.type === 'closed' ? `status-dot-${t.clientStatus}` :
+                      t.type === 'reopened' ? 'bg-primary-400' : 'bg-surface-300'"
+            />
             <div class="flex-1 min-w-0">
-              <div class="text-[13.5px] font-semibold">{{ statusLabels[h.clientStatus] }}{{ h.flight ? ` · ${h.flight}` : '' }}</div>
-              <div class="text-[11.5px] text-surface-400 mt-0.5">
-                {{ formatDate(h.closedAt) }}<span v-if="h.amount"> · ${{ h.amount }}</span>
-              </div>
-            </div>
-          </li>
-          <li v-if="clientInfo" class="flex gap-3">
-            <span class="history-dot bg-surface-300" />
-            <div class="flex-1">
-              <div class="text-[13.5px] font-semibold">Первое обращение</div>
-              <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDate(clientInfo.firstContactAt) }}</div>
+              <template v-if="t.type === 'closed'">
+                <div class="text-[13.5px] font-semibold">
+                  {{ statusLabels[t.clientStatus] }}{{ t.flight ? ` · ${t.flight}` : '' }}
+                </div>
+                <div class="text-[11.5px] text-surface-400 mt-0.5">
+                  {{ formatDate(t.date) }}<span v-if="t.amount"> · ${{ t.amount }}</span>
+                </div>
+              </template>
+              <template v-else-if="t.type === 'reopened'">
+                <div class="text-[13.5px] font-semibold">Возобновлён</div>
+                <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDate(t.date) }}</div>
+              </template>
+              <template v-else>
+                <div class="text-[13.5px] font-semibold">Первое обращение</div>
+                <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDate(t.date) }}</div>
+              </template>
             </div>
           </li>
         </ul>
@@ -503,54 +536,59 @@
           <div class="grid grid-cols-2 gap-3">
             <div>
               <div class="field-label">Какой рейс</div>
-              <div class="route-input">
-                <input v-model="closeDialog.flightFrom" placeholder="Откуда" class="route-field" />
+              <div class="route-pair">
+                <BaseInput v-model="closeDialog.flightFrom" placeholder="Откуда" />
                 <i class="pi pi-arrow-right route-arrow" />
-                <input v-model="closeDialog.flightTo" placeholder="Куда" class="route-field" />
+                <BaseInput v-model="closeDialog.flightTo" placeholder="Куда" />
               </div>
             </div>
             <div>
               <div class="field-label">Сумма</div>
-              <div class="amount-wrap">
-                <span class="amount-prefix">$</span>
-                <input v-model="closeDialog.amount" placeholder="0" type="text" inputmode="decimal" class="amount-field" />
-              </div>
+              <BaseInput
+                v-model="closeDialog.amount"
+                placeholder="0"
+                inputmode="decimal"
+                :sanitize="onlyDecimal"
+                prefix="$"
+              />
             </div>
           </div>
 
           <!-- Dates -->
           <div>
             <div class="field-label">На какие даты</div>
-            <input v-model="closeDialog.dates" placeholder="1–8 мая 2026" class="text-field" />
+            <BaseDatePicker
+              v-model="closeDialog.dateRange"
+              selectionMode="range"
+              placeholder="Выберите даты"
+              dateFormat="d MM yy"
+            />
           </div>
 
           <!-- Comment -->
           <div>
             <div class="field-label">Комментарий менеджера</div>
-            <textarea
+            <BaseTextarea
               v-model="closeDialog.comment"
-              rows="3"
+              :rows="3"
               placeholder="Подробности о клиенте, договорённости, напоминания..."
-              class="text-field text-area"
             />
           </div>
         </div>
 
         <footer class="close-footer">
-          <button
-            class="btn-text"
+          <BaseButton
+            variant="text"
             :disabled="closeDialog.saving"
             @click="closeDialog.open = false"
-          >Отмена</button>
-          <button
-            class="btn-primary"
-            :disabled="!closeDialog.status || closeDialog.saving"
+          >Отмена</BaseButton>
+          <BaseButton
+            variant="primary"
+            :icon="closeDialog.saving ? '' : 'pi pi-check'"
+            :loading="closeDialog.saving"
+            :disabled="!closeDialog.status"
             @click="confirmClose"
-          >
-            <i v-if="closeDialog.saving" class="pi pi-spin pi-spinner" />
-            <i v-else class="pi pi-check" />
-            Закрыть чат
-          </button>
+          >Закрыть чат</BaseButton>
         </footer>
       </div>
     </Dialog>
@@ -562,7 +600,7 @@ import VoicePlayer from '~/components/VoicePlayer.vue'
 
 definePageMeta({ middleware: 'auth' })
 
-const { chats, activeChat, messages, loading, openChat, loadOlder, sendMessage, assignChat, closeChat, loadClientInfo, setupRealtime } = useChats()
+const { chats, activeChat, messages, loading, openChat, loadOlder, sendMessage, assignChat, closeChat, reopenChat, loadClientInfo, setupRealtime } = useChats()
 type ClientStatus = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
 type ClientInfoData = Awaited<ReturnType<typeof loadClientInfo>>
 
@@ -572,11 +610,26 @@ const closeDialog = ref({
   status: '' as ClientStatus | '',
   flightFrom: '',
   flightTo: '',
-  dates: '',
+  dateRange: null as Date[] | null,
   amount: '',
   comment: '',
   saving: false,
 })
+
+function onlyDecimal(raw: string): string {
+  // Keep digits and a single decimal point
+  return raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')
+}
+
+function formatDateRange(range: Date[] | null): string {
+  if (!range || !range[0]) return ''
+  const fmt = (d: Date) => d.toLocaleDateString('ru', { day: 'numeric', month: 'short' })
+  const year = range[0].getFullYear()
+  if (!range[1] || range[0].toDateString() === range[1].toDateString()) {
+    return `${fmt(range[0])} ${year}`
+  }
+  return `${fmt(range[0])} – ${fmt(range[1])} ${year}`
+}
 
 const clientStatuses: { value: ClientStatus; label: string }[] = [
   { value: 'thinking',     label: 'Думает' },
@@ -669,6 +722,7 @@ function chatPreview(chat: any): string {
     case 'photo': return prefix + '📷 Фото' + (c.caption ? `: ${c.caption}` : '')
     case 'voice': return prefix + '🎤 Голосовое сообщение'
     case 'video': return prefix + '🎥 Видео' + (c.caption ? `: ${c.caption}` : '')
+    case 'videoNote': return prefix + '⭕ Видеосообщение'
     case 'document': return prefix + '📎 ' + (c.fileName || 'Файл')
     case 'sticker': return prefix + (c.emoji || '🎁') + ' Стикер'
     default: return prefix + 'Сообщение'
@@ -812,11 +866,17 @@ function handleClose() {
     status: '',
     flightFrom: '',
     flightTo: '',
-    dates: '',
+    dateRange: null,
     amount: '',
     comment: '',
     saving: false,
   }
+}
+
+async function handleReopen() {
+  if (!activeChat.value) return
+  await reopenChat(activeChat.value.id)
+  await refreshClientInfo(activeChat.value.id)
 }
 
 async function confirmClose() {
@@ -830,13 +890,12 @@ async function confirmClose() {
         status: d.status as ClientStatus,
         flightFrom: d.flightFrom || undefined,
         flightTo: d.flightTo || undefined,
-        dates: d.dates || undefined,
+        dates: formatDateRange(d.dateRange) || undefined,
         amount: d.amount ? Number(d.amount) : undefined,
         comment: d.comment || undefined,
       },
     })
     closeDialog.value.open = false
-    // Refresh client info so the sidebar shows the new status immediately
     if (activeChat.value) await refreshClientInfo(activeChat.value.id)
   } finally {
     closeDialog.value.saving = false
@@ -855,6 +914,12 @@ async function refreshClientInfo(chatId: string) {
 watch(() => activeChat.value?.id, (id) => {
   if (id) refreshClientInfo(id)
   else clientInfo.value = null
+})
+
+// Also re-pull when the chat's status flips (close/reopen) so the
+// sidebar timeline updates without a manual refresh.
+watch(() => activeChat.value?.status, () => {
+  if (activeChat.value?.id) refreshClientInfo(activeChat.value.id)
 })
 
 // === Message grouping ===
@@ -922,6 +987,28 @@ function formatTime(iso: string | null) {
 function formatMessageTime(iso: string | null) {
   if (!iso) return ''
   return new Date(iso).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatVideoDuration(seconds: number): string {
+  if (!seconds || !isFinite(seconds)) return '0:00'
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+// Telegram-like: round videos autoplay muted; clicking toggles sound + pause
+function toggleVideoNote(e: MouseEvent) {
+  const wrap = e.currentTarget as HTMLElement
+  const video = wrap.querySelector('video') as HTMLVideoElement | null
+  if (!video) return
+  if (video.muted) {
+    video.muted = false
+    video.currentTime = 0
+    video.play().catch(() => {})
+  } else {
+    if (video.paused) video.play().catch(() => {})
+    else video.pause()
+  }
 }
 
 function formatDate(iso: string | null | undefined) {
@@ -1291,6 +1378,62 @@ onMounted(async () => {
   color: var(--p-surface-700) !important;
 }
 
+/* ===== Video note (round Telegram-style short video) ===== */
+.video-note {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  cursor: pointer;
+  border-radius: 9999px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+.video-note-player {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--p-surface-200);
+}
+.video-note-meta {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  backdrop-filter: blur(6px);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.video-note-time {
+  position: absolute;
+  top: 50%;
+  right: -56px;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  color: var(--p-surface-500);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.self-end .video-note-time { right: auto; left: -56px; }
+
+/* Video-notes (like stickers) don't get a bubble background */
+.bubble:has(.video-note) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
 /* ===== Unsupported ===== */
 .unsupported {
   display: inline-flex;
@@ -1449,6 +1592,20 @@ onMounted(async () => {
   margin-bottom: 8px;
 }
 
+/* Two BaseInputs side-by-side with an arrow between */
+.route-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.route-arrow {
+  color: var(--p-surface-400);
+  font-size: 13px;
+  display: flex;
+  justify-content: center;
+}
+
 /* === Status radio cards === */
 .status-grid {
   display: flex;
@@ -1491,141 +1648,6 @@ onMounted(async () => {
   background: var(--p-primary-color);
 }
 
-/* === Inputs — clearly bordered cards === */
-.text-field {
-  width: 100%;
-  height: 42px;
-  padding: 0 14px;
-  border-radius: 11px;
-  background: var(--p-surface-100);
-  border: 1.5px solid var(--p-surface-200);
-  color: var(--p-surface-900);
-  font-size: 14.5px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
-}
-[data-theme="dark"] .text-field {
-  background: color-mix(in srgb, var(--p-surface-200) 50%, transparent);
-  border-color: var(--p-surface-300);
-}
-.text-field::placeholder { color: var(--p-surface-400); }
-.text-field:focus {
-  border-color: var(--p-primary-color);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-primary-color) 18%, transparent);
-}
-.text-area {
-  height: auto;
-  padding: 10px 14px;
-  resize: vertical;
-  min-height: 80px;
-  line-height: 1.5;
-}
-
-/* Two-input route field with arrow between */
-.route-input {
-  display: flex;
-  align-items: stretch;
-  border-radius: 11px;
-  background: var(--p-surface-100);
-  border: 1.5px solid var(--p-surface-200);
-  overflow: hidden;
-  transition: border-color 0.12s, box-shadow 0.12s;
-}
-[data-theme="dark"] .route-input {
-  background: color-mix(in srgb, var(--p-surface-200) 50%, transparent);
-  border-color: var(--p-surface-300);
-}
-.route-input:focus-within {
-  border-color: var(--p-primary-color);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-primary-color) 18%, transparent);
-}
-.route-field {
-  flex: 1;
-  height: 40px;
-  padding: 0 12px;
-  background: transparent;
-  border: 0;
-  outline: 0;
-  color: var(--p-surface-900);
-  font-size: 14.5px;
-  font-family: inherit;
-  min-width: 0;
-}
-.route-field::placeholder { color: var(--p-surface-400); }
-.route-arrow {
-  align-self: center;
-  color: var(--p-surface-400);
-  padding: 0 4px;
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-/* Amount input with $ prefix */
-.amount-wrap {
-  display: flex;
-  align-items: center;
-  border-radius: 11px;
-  background: var(--p-surface-100);
-  border: 1.5px solid var(--p-surface-200);
-  height: 42px;
-  overflow: hidden;
-  transition: border-color 0.12s, box-shadow 0.12s;
-}
-[data-theme="dark"] .amount-wrap {
-  background: color-mix(in srgb, var(--p-surface-200) 50%, transparent);
-  border-color: var(--p-surface-300);
-}
-.amount-wrap:focus-within {
-  border-color: var(--p-primary-color);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-primary-color) 18%, transparent);
-}
-.amount-prefix {
-  padding: 0 4px 0 14px;
-  color: var(--p-surface-400);
-  font-size: 14.5px;
-  font-weight: 600;
-}
-.amount-field {
-  flex: 1;
-  background: transparent;
-  border: 0;
-  outline: 0;
-  height: 100%;
-  padding: 0 12px 0 4px;
-  color: var(--p-surface-900);
-  font-size: 14.5px;
-  font-family: inherit;
-  min-width: 0;
-}
-.amount-field::placeholder { color: var(--p-surface-400); }
-
-/* Footer buttons */
-.btn-text {
-  padding: 9px 16px;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--p-surface-600);
-  transition: background 0.12s, color 0.12s;
-}
-.btn-text:hover { background: var(--p-surface-200); color: var(--p-surface-800); }
-.btn-text:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #ffffff;
-  background: linear-gradient(135deg, var(--p-primary-color) 0%, #a78bfa 100%);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--p-primary-color) 30%, transparent);
-  transition: transform 0.12s, filter 0.12s, opacity 0.12s;
-}
-.btn-primary:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 
 .take-icon {
   width: 56px;

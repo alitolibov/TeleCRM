@@ -77,23 +77,25 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       chat = newChat
     } else if (chat.status === 'closed') {
       // Reopen — manager already worked this lead, treat as 'active' (not 'new')
-      // regardless of direction. Avoids the "take in work?" modal for chats
-      // that already had a back-and-forth.
+      const prev = chat.status
       const [reopened] = await this.db
         .update(schema.chats)
         .set({ status: 'active', closedAt: null, updatedAt: new Date() })
         .where(eq(schema.chats.id, chat.id))
         .returning()
       chat = reopened
+      await this.logStatusChange(chat.id, null, prev, 'active', {
+        trigger: event.isOutgoing ? 'manager_message' : 'client_message',
+      })
     } else if (chat.status === 'new' && event.isOutgoing) {
-      // Manager replied to a still-untouched chat (e.g. from phone) — promote
-      // to 'active' so it stops counting as awaiting first response.
+      const prev = chat.status
       const [activated] = await this.db
         .update(schema.chats)
         .set({ status: 'active', updatedAt: new Date() })
         .where(eq(schema.chats.id, chat.id))
         .returning()
       chat = activated
+      await this.logStatusChange(chat.id, null, prev, 'active', { trigger: 'manager_message' })
     }
 
     // 3. For outgoing text messages, check if it's an echo of a CRM-sent message
@@ -123,7 +125,10 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 4. Insert message (ON CONFLICT DO NOTHING — dedup by telegramMessageId)
-    const contentType = event.content.type as schema.ContentType
+    // Map TgMessageContent.type → DB enum (some shared variants don't have
+    // their own enum value, like 'videoNote' which falls under 'video').
+    const contentType: schema.ContentType =
+      event.content.type === 'videoNote' ? 'video' : (event.content.type as schema.ContentType)
     const isNewChat = !chat.lastMessageAt
     const senderType = event.isOutgoing ? 'manager' : 'client'
 
@@ -144,12 +149,16 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     if (!message) return // duplicate — already processed
 
-    // 4. Update chat stats. Only count incoming messages toward unread.
-    const newUnreadCount = event.isOutgoing ? chat.unreadCount : chat.unreadCount + 1
+    // 4. Update chat stats. Prefer Telegram's authoritative unread_count when
+    // available (avoids overcount when updateChatReadInbox races with
+    // updateNewMessage); fall back to a local +1 increment otherwise.
+    const newUnreadCount = event.isOutgoing
+      ? chat.unreadCount
+      : event.unreadCount ?? chat.unreadCount + 1
     await this.db
       .update(schema.chats)
       .set({
-        ...(event.isOutgoing ? {} : { unreadCount: sql`${schema.chats.unreadCount} + 1` }),
+        ...(event.isOutgoing ? {} : { unreadCount: newUnreadCount }),
         lastMessageAt: message.createdAt,
         updatedAt: new Date(),
       })
@@ -297,6 +306,40 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return chat
   }
 
+  private async logStatusChange(
+    chatId: string,
+    actorId: string | null,
+    from: 'new' | 'active' | 'closed',
+    to: 'new' | 'active' | 'closed',
+    extra: Record<string, unknown> = {},
+  ) {
+    await this.db.insert(schema.actionLogs).values({
+      action: 'chat_status_changed',
+      actorId,
+      chatId,
+      metadata: { from, to, ...extra },
+    }).catch(() => {})
+  }
+
+  async reopen(chatId: string, userId: string) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+    })
+    if (!chat) throw new Error('Chat not found')
+    if (chat.status !== 'closed') return chat // no-op
+
+    const [updated] = await this.db
+      .update(schema.chats)
+      .set({ status: 'active', closedAt: null, updatedAt: new Date() })
+      .where(eq(schema.chats.id, chatId))
+      .returning()
+
+    await this.logStatusChange(chatId, userId, 'closed', 'active', { trigger: 'manual_reopen' })
+
+    this.gateway?.emitChatUpdated({ id: chatId, status: 'active' })
+    return updated
+  }
+
   async close(chatId: string, userId: string, result?: {
     status: 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
     flightFrom?: string
@@ -333,11 +376,29 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         })
     }
 
+    const prev = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      columns: { status: true },
+    })
     const [chat] = await this.db
       .update(schema.chats)
       .set({ status: 'closed', closedAt: new Date(), unreadCount: 0, updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
       .returning()
+
+    if (prev && prev.status !== 'closed') {
+      const flight = result
+        ? [result.flightFrom?.trim(), result.flightTo?.trim()].filter(Boolean).join(' → ') || null
+        : null
+      await this.logStatusChange(chatId, userId, prev.status, 'closed', {
+        trigger: 'manual_close',
+        clientStatus: result?.status,
+        flight,
+        dates: result?.dates ?? null,
+        amount: result?.amount != null ? String(result.amount) : null,
+        comment: result?.comment ?? null,
+      })
+    }
 
     this.gateway?.emitChatUpdated({
       id: chat.id,
@@ -364,24 +425,83 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       orderBy: (c, { asc }) => asc(c.createdAt),
     })
 
-    const closedChatsWithResults = allChats.filter((c) => c.result)
-    const latestResult = closedChatsWithResults[closedChatsWithResults.length - 1]?.result ?? null
+    // All status-change events across this client's chats
+    const chatIds = allChats.map((c) => c.id)
+    const logs = chatIds.length
+      ? await this.db.query.actionLogs.findMany({
+          where: (l, { inArray }) => inArray(l.chatId, chatIds),
+          orderBy: (l, { desc }) => desc(l.createdAt),
+        })
+      : []
+
+    type TimelineItem =
+      | {
+          type: 'closed'
+          date: string
+          clientStatus: string
+          flight: string | null
+          amount: string | null
+          dates: string | null
+          comment: string | null
+        }
+      | { type: 'reopened'; date: string; trigger?: string }
+      | { type: 'first_contact'; date: string }
+    const timeline: TimelineItem[] = []
+
+    // Each close-event becomes its own timeline entry with its own metadata,
+    // so multiple closes of the same chat (close → reopen → close again) all show up.
+    for (const log of logs) {
+      const meta = log.metadata as any
+      if (log.action !== 'chat_status_changed') continue
+      if (meta?.to === 'closed' && meta?.clientStatus) {
+        timeline.push({
+          type: 'closed',
+          date: log.createdAt.toISOString(),
+          clientStatus: meta.clientStatus,
+          flight: meta.flight ?? null,
+          amount: meta.amount ?? null,
+          dates: meta.dates ?? null,
+          comment: meta.comment ?? null,
+        })
+      } else if (meta?.to === 'active' && meta?.from === 'closed') {
+        timeline.push({
+          type: 'reopened',
+          date: log.createdAt.toISOString(),
+          trigger: meta?.trigger,
+        })
+      }
+    }
+    timeline.push({
+      type: 'first_contact',
+      date: (allChats[0]?.createdAt ?? chat.createdAt).toISOString(),
+    })
+    timeline.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+    // "Current" status pill = most recent closed event for this chat
+    const latestCloseForThisChat = logs.find((l) => {
+      const m = l.metadata as any
+      return l.chatId === chatId && l.action === 'chat_status_changed' && m?.to === 'closed' && m?.clientStatus
+    })
+    const currentChatResult = latestCloseForThisChat
+      ? {
+          clientStatus: (latestCloseForThisChat.metadata as any).clientStatus,
+          flight: (latestCloseForThisChat.metadata as any).flight ?? null,
+          dates: (latestCloseForThisChat.metadata as any).dates ?? null,
+          amount: (latestCloseForThisChat.metadata as any).amount ?? null,
+          comment: (latestCloseForThisChat.metadata as any).comment ?? null,
+        }
+      : (allChats.find((c) => c.id === chatId)?.result ?? null)
+
+    const latestClosedEvent = timeline.find((t) => t.type === 'closed') as Extract<TimelineItem, { type: 'closed' }> | undefined
 
     return {
       client: chat.client,
       assignedUser: chat.assignedUser,
       totalDialogs: allChats.length,
       firstContactAt: allChats[0]?.createdAt ?? chat.createdAt,
-      latestStatus: latestResult?.clientStatus ?? null,
-      currentChatResult: allChats.find((c) => c.id === chatId)?.result ?? null,
-      history: closedChatsWithResults.map((c) => ({
-        chatId: c.id,
-        closedAt: c.closedAt,
-        clientStatus: c.result!.clientStatus,
-        flight: c.result!.flight,
-        amount: c.result!.amount,
-        dates: c.result!.dates,
-      })),
+      latestStatus: latestClosedEvent?.clientStatus ?? null,
+      currentChatResult,
+      timeline,
     }
   }
 
