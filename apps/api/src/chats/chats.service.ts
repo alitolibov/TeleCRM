@@ -9,6 +9,7 @@ import type {
   TgOutgoingJob,
   TgHistoryRequestJob,
   TgHistoryResponse,
+  TgReadSyncEvent,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { DRIZZLE } from '../db/drizzle.module'
@@ -66,19 +67,33 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     })
 
     if (!chat) {
+      // Fresh chat: if the FIRST message we see is from the manager (e.g. our
+      // own reply pulled in by sync), the chat is already 'active' — never 'new'.
+      const initialStatus: schema.ChatStatus = event.isOutgoing ? 'active' : 'new'
       const [newChat] = await this.db
         .insert(schema.chats)
-        .values({ clientId: client.id, status: 'new' })
+        .values({ clientId: client.id, status: initialStatus })
         .returning()
       chat = newChat
-    } else if (chat.status === 'closed' && !event.isOutgoing) {
-      // reopen only when client writes (not when manager texts from phone)
+    } else if (chat.status === 'closed') {
+      // Reopen — manager already worked this lead, treat as 'active' (not 'new')
+      // regardless of direction. Avoids the "take in work?" modal for chats
+      // that already had a back-and-forth.
       const [reopened] = await this.db
         .update(schema.chats)
-        .set({ status: 'new', closedAt: null, updatedAt: new Date() })
+        .set({ status: 'active', closedAt: null, updatedAt: new Date() })
         .where(eq(schema.chats.id, chat.id))
         .returning()
       chat = reopened
+    } else if (chat.status === 'new' && event.isOutgoing) {
+      // Manager replied to a still-untouched chat (e.g. from phone) — promote
+      // to 'active' so it stops counting as awaiting first response.
+      const [activated] = await this.db
+        .update(schema.chats)
+        .set({ status: 'active', updatedAt: new Date() })
+        .where(eq(schema.chats.id, chat.id))
+        .returning()
+      chat = activated
     }
 
     // 3. For outgoing text messages, check if it's an echo of a CRM-sent message
@@ -143,9 +158,20 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     // 5. Realtime push — emit chat:new FIRST so the chat exists in the
     // frontend's list before message:new tries to update it.
     if (isNewChat) {
-      this.gateway?.emitNewChat({ ...chat, client, unreadCount: newUnreadCount, lastMessageAt: message.createdAt })
+      this.gateway?.emitNewChat({
+        ...chat, client,
+        unreadCount: newUnreadCount,
+        lastMessageAt: message.createdAt,
+        lastMessage: message,
+      })
     } else {
-      this.gateway?.emitChatUpdated({ id: chat.id, unreadCount: newUnreadCount, lastMessageAt: message.createdAt })
+      this.gateway?.emitChatUpdated({
+        id: chat.id,
+        status: chat.status, // include in case it was reopened (closed→active) or upgraded (new→active)
+        unreadCount: newUnreadCount,
+        lastMessageAt: message.createdAt,
+        lastMessage: message,
+      })
     }
     this.gateway?.emitNewMessage(chat.id, { ...message, client })
 
@@ -153,7 +179,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async findAll(userId: string, role: string) {
-    return this.db.query.chats.findMany({
+    const chats = await this.db.query.chats.findMany({
       where: role === 'manager'
         ? (c, { eq }) => eq(c.assignedTo, userId)
         : undefined,
@@ -163,6 +189,20 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       },
       orderBy: (c, { desc }) => desc(c.lastMessageAt),
     })
+
+    if (chats.length === 0) return []
+
+    // Fetch the last message per chat in parallel for the list preview
+    const lastMessages = await Promise.all(
+      chats.map((chat) =>
+        this.db.query.messages.findFirst({
+          where: (m, { eq }) => eq(m.chatId, chat.id),
+          orderBy: (m, { desc }) => desc(m.createdAt),
+        }),
+      ),
+    )
+
+    return chats.map((chat, i) => ({ ...chat, lastMessage: lastMessages[i] ?? null }))
   }
 
   async findOne(chatId: string) {
@@ -257,13 +297,92 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return chat
   }
 
-  async close(chatId: string) {
+  async close(chatId: string, userId: string, result?: {
+    status: 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+    flightFrom?: string
+    flightTo?: string
+    dates?: string
+    amount?: number
+    comment?: string
+  }) {
+    if (result) {
+      const flight = [result.flightFrom?.trim(), result.flightTo?.trim()]
+        .filter(Boolean)
+        .join(' → ') || null
+      await this.db
+        .insert(schema.chatResults)
+        .values({
+          chatId,
+          clientStatus: result.status,
+          flight,
+          dates: result.dates ?? null,
+          amount: result.amount != null ? String(result.amount) : null,
+          comment: result.comment ?? null,
+          createdBy: userId,
+        })
+        .onConflictDoUpdate({
+          target: schema.chatResults.chatId,
+          set: {
+            clientStatus: result.status,
+            flight,
+            dates: result.dates ?? null,
+            amount: result.amount != null ? String(result.amount) : null,
+            comment: result.comment ?? null,
+            updatedAt: new Date(),
+          },
+        })
+    }
+
     const [chat] = await this.db
       .update(schema.chats)
       .set({ status: 'closed', closedAt: new Date(), unreadCount: 0, updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
       .returning()
+
+    this.gateway?.emitChatUpdated({
+      id: chat.id,
+      status: chat.status,
+      unreadCount: 0,
+    })
+
     return chat
+  }
+
+  async getClientInfo(chatId: string) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: {
+        client: true,
+        assignedUser: { columns: { id: true, firstName: true, username: true } },
+      },
+    })
+    if (!chat) return null
+
+    const allChats = await this.db.query.chats.findMany({
+      where: (c, { eq }) => eq(c.clientId, chat.client.id),
+      with: { result: true },
+      orderBy: (c, { asc }) => asc(c.createdAt),
+    })
+
+    const closedChatsWithResults = allChats.filter((c) => c.result)
+    const latestResult = closedChatsWithResults[closedChatsWithResults.length - 1]?.result ?? null
+
+    return {
+      client: chat.client,
+      assignedUser: chat.assignedUser,
+      totalDialogs: allChats.length,
+      firstContactAt: allChats[0]?.createdAt ?? chat.createdAt,
+      latestStatus: latestResult?.clientStatus ?? null,
+      currentChatResult: allChats.find((c) => c.id === chatId)?.result ?? null,
+      history: closedChatsWithResults.map((c) => ({
+        chatId: c.id,
+        closedAt: c.closedAt,
+        clientStatus: c.result!.clientStatus,
+        flight: c.result!.flight,
+        amount: c.result!.amount,
+        dates: c.result!.dates,
+      })),
+    }
   }
 
   async sendMessage(chatId: string, text: string, senderId: string) {
@@ -293,19 +412,40 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       })
       .returning()
 
+    // If the chat was closed and the manager replied, reopen it as 'active'
+    // immediately (don't wait for the TDLib echo to update status).
+    const statusUpdate = chat.status === 'closed' ? { status: 'active' as const, closedAt: null } : {}
     await this.db
       .update(schema.chats)
-      .set({ lastMessageAt: message.createdAt, updatedAt: new Date() })
+      .set({ ...statusUpdate, lastMessageAt: message.createdAt, updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
+
+    // Manager engaged → mark everything before this as read (clears unread badge
+    // AND sends viewMessages to Telegram so the client sees double-check).
+    await this.markRead(chatId)
 
     // Broadcast so all open CRM clients (other managers, other tabs) see the message
     this.gateway?.emitNewMessage(chatId, { ...message, client: chat.client })
-    this.gateway?.emitChatUpdated({ id: chatId, lastMessageAt: message.createdAt })
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      ...(chat.status === 'closed' ? { status: 'active' } : {}),
+      unreadCount: 0,
+      lastMessageAt: message.createdAt,
+      lastMessage: message,
+    })
 
-    return message
+    return { ...message, status: chat.status === 'closed' ? 'active' : message.status }
   }
 
   async markRead(chatId: string) {
+    // Collect unread client messages BEFORE clearing — we need their Telegram IDs
+    // to mark them as read on the Telegram side too (so the user sees double-check).
+    const unreadClientMessages = await this.db.query.messages.findMany({
+      where: (m, { eq, and }) =>
+        and(eq(m.chatId, chatId), eq(m.isRead, false), eq(m.senderType, 'client')),
+      columns: { telegramMessageId: true },
+    })
+
     await this.db
       .update(schema.chats)
       .set({ unreadCount: 0, updatedAt: new Date() })
@@ -315,5 +455,111 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       .update(schema.messages)
       .set({ isRead: true })
       .where(and(eq(schema.messages.chatId, chatId), eq(schema.messages.isRead, false)))
+
+    // Tell Telegram that the manager has read these messages (sets the "double check"
+    // / removes the unread badge on the client's side).
+    if (unreadClientMessages.length > 0) {
+      const chat = await this.db.query.chats.findFirst({
+        where: (c, { eq }) => eq(c.id, chatId),
+        with: { client: true },
+      })
+      if (chat) {
+        await this.outgoingQueue.add('viewMessages', {
+          chatId: chat.client.telegramId,
+          content: {
+            type: 'viewMessages',
+            messageIds: unreadClientMessages.map(m => m.telegramMessageId),
+          },
+        }).catch(() => {})
+      }
+    }
+  }
+
+  /**
+   * Applies a "read" event coming from another Telegram client (phone, desktop).
+   * Updates messages + chat counter and broadcasts the new state.
+   */
+  async applyExternalRead(event: TgReadSyncEvent) {
+    // Find the CRM chat by the telegram user_id (= chat_id in TDLib for private chats)
+    const client = await this.db.query.clients.findFirst({
+      where: (c, { eq }) => eq(c.telegramId, event.chatId),
+    })
+    if (!client) return // not a chat we track
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.clientId, client.id),
+      orderBy: (c, { desc }) => desc(c.createdAt),
+    })
+    if (!chat) return
+
+    // Mark every client message up to lastReadMessageId as read
+    await this.db
+      .update(schema.messages)
+      .set({ isRead: true })
+      .where(and(
+        eq(schema.messages.chatId, chat.id),
+        eq(schema.messages.senderType, 'client'),
+        eq(schema.messages.isRead, false),
+        sql`${schema.messages.telegramMessageId} <= ${event.lastReadMessageId}`,
+      ))
+
+    // Mirror Telegram's authoritative unread count
+    if (chat.unreadCount !== event.unreadCount) {
+      await this.db
+        .update(schema.chats)
+        .set({ unreadCount: event.unreadCount, updatedAt: new Date() })
+        .where(eq(schema.chats.id, chat.id))
+
+      this.gateway?.emitChatUpdated({ id: chat.id, unreadCount: event.unreadCount })
+    }
+  }
+
+  // === File uploads from CRM ===
+  async sendMedia(
+    chatId: string,
+    filePath: string,
+    fileName: string,
+    mimeType: string,
+    _size: number,
+    _senderId: string,
+    caption?: string,
+  ) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: { client: true },
+    })
+    if (!chat) throw new Error('Chat not found')
+
+    const isImage = mimeType.startsWith('image/')
+    const contentType: schema.ContentType = isImage ? 'photo' : 'document'
+
+    // Queue the upload + send to tg-worker
+    await this.outgoingQueue.add('send', {
+      chatId: chat.client.telegramId,
+      content: isImage
+        ? { type: 'photo', filePath, caption }
+        : { type: 'document', filePath, fileName, caption },
+    })
+
+    // For text we save a 'sending' placeholder; for media we wait for the TDLib
+    // echo (it brings a real fileId that the /files endpoint can serve).
+    // Reopen closed chats so the manager's send is reflected as "active" right away.
+    const statusUpdate = chat.status === 'closed' ? { status: 'active' as const, closedAt: null } : {}
+    await this.db
+      .update(schema.chats)
+      .set({ ...statusUpdate, lastMessageAt: new Date(), updatedAt: new Date() })
+      .where(eq(schema.chats.id, chatId))
+
+    // Manager engaged → clear unread + Telegram read receipts.
+    await this.markRead(chatId)
+
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      ...(chat.status === 'closed' ? { status: 'active' } : {}),
+      unreadCount: 0,
+      lastMessageAt: new Date(),
+    })
+
+    return { queued: true, contentType, fileName }
   }
 }

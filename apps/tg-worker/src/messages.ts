@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq'
-import type { TgMessageContent, TgMessageEvent } from '@telecrm/shared'
+import type { TgMessageContent, TgMessageEvent, TgReadSyncEvent } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
 
@@ -11,6 +11,11 @@ function buildRedisConnection() {
 const messageQueue = new Queue<TgMessageEvent>(REDIS_QUEUES.tgIncoming, {
   connection: buildRedisConnection(),
   defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
+})
+
+const readSyncQueue = new Queue<TgReadSyncEvent>(REDIS_QUEUES.tgReadSync, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
 })
 
 const userCache = new Map<number, any>()
@@ -151,7 +156,28 @@ export async function syncChats(client: any, limit: number = 100): Promise<void>
   }
 }
 
-export function setupMessageHandler(client: any) {
+// Telegram service accounts that send notifications (login codes, account
+// alerts, etc.) — never relevant to a CRM workflow.
+const SERVICE_USER_IDS = new Set<number>([777000])
+
+export function setupMessageHandler(client: any, myUserId: number) {
+  console.log(`[tg-worker] message handler ready (skipping self=${myUserId} + service accounts)`)
+
+  // When the user reads messages on another device (phone/desktop), TDLib fires
+  // updateChatReadInbox with the new unread_count. Sync this to CRM so the
+  // badge clears without needing to open the chat in CRM.
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateChatReadInbox') return
+    if (update.chat_id <= 0) return
+    if (update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+
+    await readSyncQueue.add('read', {
+      chatId: update.chat_id,
+      lastReadMessageId: update.last_read_inbox_message_id,
+      unreadCount: update.unread_count,
+    }).catch((e) => console.error('[tg-worker] read-sync enqueue failed:', e))
+  })
   client.on('update', async (update: any) => {
     if (update._ !== 'updateNewMessage') return
 
@@ -159,6 +185,10 @@ export function setupMessageHandler(client: any) {
 
     // private chats only — group/channel IDs are negative
     if (msg.chat_id <= 0) return
+
+    // skip Saved Messages (chat with self) and Telegram service notifications
+    if (msg.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(msg.chat_id)) return
 
     // skip messages sent on behalf of a channel/chat (extremely rare in 1-on-1)
     if (msg.sender_id?._ === 'messageSenderChat') return

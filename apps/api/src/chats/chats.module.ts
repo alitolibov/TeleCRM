@@ -4,7 +4,7 @@ import { JwtModule } from '@nestjs/jwt'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { ChatsController } from './chats.controller'
 import { ChatsService } from './chats.service'
-import { ChatsProcessor } from './chats.processor'
+import { ChatsProcessor, ChatsReadSyncProcessor } from './chats.processor'
 import { ChatsGateway } from './chats.gateway'
 import { REDIS_QUEUES } from '@telecrm/shared'
 
@@ -14,6 +14,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       { name: REDIS_QUEUES.tgIncoming },
       { name: REDIS_QUEUES.tgOutgoing },
       { name: REDIS_QUEUES.tgHistoryRequest },
+      { name: REDIS_QUEUES.tgReadSync },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -24,6 +25,6 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     }),
   ],
   controllers: [ChatsController],
-  providers: [ChatsService, ChatsProcessor, ChatsGateway],
+  providers: [ChatsService, ChatsProcessor, ChatsReadSyncProcessor, ChatsGateway],
 })
 export class ChatsModule {}

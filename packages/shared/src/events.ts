@@ -28,3 +28,13 @@ export interface TgConnectionEvent {
   state: 'connecting' | 'connected' | 'disconnected'
   timestamp: number
 }
+
+/**
+ * Fired by TDLib when the user reads messages on any of their devices.
+ * Lets the CRM sync its unread badge to whatever Telegram thinks is true.
+ */
+export interface TgReadSyncEvent {
+  chatId: number              // telegram chat id (= client's user_id for private chats)
+  lastReadMessageId: number   // newest message ID that has been read
+  unreadCount: number         // remaining unread messages
+}

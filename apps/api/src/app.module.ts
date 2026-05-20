@@ -5,6 +5,7 @@ import { DrizzleModule } from './db/drizzle.module'
 import { UsersModule } from './users/users.module'
 import { AuthModule } from './auth/auth.module'
 import { ChatsModule } from './chats/chats.module'
+import { FilesModule } from './files/files.module'
 import { HealthController } from './health.controller'
 
 @Module({
@@ -22,6 +23,7 @@ import { HealthController } from './health.controller'
     UsersModule,
     AuthModule,
     ChatsModule,
+    FilesModule,
   ],
   controllers: [HealthController],
 })

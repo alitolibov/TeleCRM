@@ -6,29 +6,63 @@
 
 html, body, #__nuxt {
   height: 100%;
-  font-family: 'Manrope', -apple-system, sans-serif;
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Inherit text color from PrimeVue's semantic token so it adapts per theme */
+html, body {
+  color: var(--p-text-color);
+  background: var(--p-content-background);
 }
 
 button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-input, textarea, select { font-family: inherit; }
+input, textarea, select { font-family: inherit; color: inherit; }
 a { color: inherit; text-decoration: none; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--p-surface-300); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--p-surface-400); }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
-.mono { font-family: 'JetBrains Mono', monospace; }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
-/* Chat-specific tokens not covered by PrimeVue */
-:root[data-theme="light"] {
+/* === Chat-specific design tokens === */
+[data-theme="light"] {
   --bubble-out: var(--p-primary-color);
-  --bubble-in: var(--p-surface-200);
-  --bubble-in-text: var(--p-surface-900);
+  --bubble-out-text: #ffffff;
+  --bubble-in: #ffffff;
+  --bubble-in-text: #18181b;
+  --bubble-in-border: var(--p-surface-200);
+  --chat-bg: #f4f4f8;
+  --chat-bg-pattern:
+    radial-gradient(circle at 20% 30%, rgba(109, 78, 242, 0.04), transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(167, 139, 250, 0.05), transparent 50%);
+  --scroll-thumb: #d8d4e0;
+  --scroll-thumb-hover: #b8b4c4;
+  --divider: var(--p-surface-200);
 }
-:root[data-theme="dark"] {
+
+[data-theme="dark"] {
   --bubble-out: var(--p-primary-color);
-  --bubble-in: var(--p-surface-100);
-  --bubble-in-text: var(--p-surface-900);
+  --bubble-out-text: #ffffff;
+  --bubble-in: #1e1b2e;
+  --bubble-in-text: #f4f4f5;
+  --bubble-in-border: transparent;
+  --chat-bg: #0e0c18;
+  --chat-bg-pattern:
+    radial-gradient(circle at 20% 30%, rgba(139, 109, 255, 0.06), transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(167, 139, 250, 0.04), transparent 50%);
+  --scroll-thumb: #2e2b3f;
+  --scroll-thumb-hover: #46425e;
+  --divider: rgba(255, 255, 255, 0.08);
+}
+
+::selection { background: color-mix(in srgb, var(--p-primary-color) 30%, transparent); }
+
+/* Smooth theme transitions */
+body, .p-component, .p-component * {
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }

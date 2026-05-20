@@ -58,6 +58,20 @@ export function setupSender(client: any) {
         })
         return
       }
+
+      if (content.type === 'viewMessages') {
+        // TDLib only acts on viewMessages for "open" chats — make sure it's open
+        // before sending the read receipt so the client sees double-check.
+        await client.invoke({ _: 'openChat', chat_id: chatId }).catch(() => {})
+        await client.invoke({
+          _: 'viewMessages',
+          chat_id: chatId,
+          message_ids: content.messageIds,
+          source: { _: 'messageSourceChatHistory' },
+          force_read: true,
+        }).catch((e: Error) => console.error('[tg-worker] viewMessages failed:', e.message))
+        return
+      }
     },
     {
       connection: buildRedisConnection(),

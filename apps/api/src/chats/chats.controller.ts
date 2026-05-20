@@ -9,11 +9,19 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  UploadedFile,
+  UseInterceptors,
+  BadRequestException,
 } from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { diskStorage } from 'multer'
+import { extname } from 'path'
+import { randomUUID } from 'crypto'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
 import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { ChatsService } from './chats.service'
 import { SendMessageDto } from './dto/send-message.dto'
+import { CloseChatDto } from './dto/close-chat.dto'
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -41,8 +49,17 @@ export class ChatsController {
   }
 
   @Patch(':id/close')
-  close(@Param('id') id: string) {
-    return this.chatsService.close(id)
+  close(
+    @Param('id') id: string,
+    @Body() dto: CloseChatDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.chatsService.close(id, user.id, dto)
+  }
+
+  @Get(':id/info')
+  info(@Param('id') id: string) {
+    return this.chatsService.getClientInfo(id)
   }
 
   @Patch(':id/read')
@@ -69,5 +86,36 @@ export class ChatsController {
     const beforeTgId = before ? Number(before) : 0
     const lim = limit ? Math.min(Number(limit), 100) : 50
     return this.chatsService.syncHistory(id, beforeTgId, lim)
+  }
+
+  @Post(':id/upload')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: '/tmp/telecrm-uploads',
+        filename: (_req, file, cb) => {
+          const safeName = `${Date.now()}-${randomUUID()}${extname(file.originalname)}`
+          cb(null, safeName)
+        },
+      }),
+      limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+    }),
+  )
+  upload(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('caption') caption: string | undefined,
+    @CurrentUser() user: { id: string },
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded')
+    return this.chatsService.sendMedia(
+      id,
+      file.path,
+      file.originalname,
+      file.mimetype,
+      file.size,
+      user.id,
+      caption,
+    )
   }
 }

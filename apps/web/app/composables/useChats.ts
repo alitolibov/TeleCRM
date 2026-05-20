@@ -2,6 +2,40 @@ import { useQuery, useMutation } from '@tanstack/vue-query'
 import { storeToRefs } from 'pinia'
 import type { Chat, ChatMessage, ChatClient } from '~/stores/chats'
 
+export type ClientStatus = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+
+export interface ClosePayload {
+  status: ClientStatus
+  flightFrom?: string
+  flightTo?: string
+  dates?: string
+  amount?: number
+  comment?: string
+}
+
+export interface ClientInfo {
+  client: ChatClient & { phone?: string | null; createdAt: string }
+  assignedUser?: { id: string; firstName: string; username?: string } | null
+  totalDialogs: number
+  firstContactAt: string
+  latestStatus: ClientStatus | null
+  currentChatResult: {
+    clientStatus: ClientStatus
+    flight: string | null
+    dates: string | null
+    amount: string | null
+    comment: string | null
+  } | null
+  history: Array<{
+    chatId: string
+    closedAt: string | null
+    clientStatus: ClientStatus
+    flight: string | null
+    amount: string | null
+    dates: string | null
+  }>
+}
+
 export function useChats() {
   const { api } = useApi()
   const store = useChatsStore()
@@ -23,57 +57,22 @@ export function useChats() {
     emit('join:chat', id)
     await api(`/chats/${id}/read`, { method: 'PATCH' }).catch(() => {})
     store.markActiveChatRead()
-
-    void (async () => {
-      // 1. Plug any holes between sparse DB messages — anchored at the NEWEST
-      //    message we have, TDLib returns up to 50 immediately preceding it,
-      //    fetching from server if needed. This recovers messages that the
-      //    worker missed while offline (e.g. client wrote before manager replied).
-      await backfillRecent(id)
-
-      // 2. Make sure we have a decent amount of older history loaded so the
-      //    user can immediately see context, without needing to scroll up.
-      let attempts = 0
-      while (store.messages.length < 30 && attempts < 3) {
-        const added = await loadOlder(id)
-        if (added === 0) break
-        attempts++
-      }
-    })()
   }
 
   /**
-   * Fetches messages immediately preceding our newest known message.
-   * Used on chat open to fill gaps between sparse messages (typical when
-   * the worker was offline during a back-and-forth).
-   */
-  async function backfillRecent(chatId: string): Promise<number> {
-    const newest = store.messages[store.messages.length - 1]
-    const before = newest?.telegramMessageId ?? 0
-    try {
-      const fetched = await api<ChatMessage[]>(
-        `/chats/${chatId}/sync-history?before=${before}&limit=50`,
-        { method: 'POST' },
-      )
-      return store.prependMessages(fetched)
-    } catch {
-      return 0
-    }
-  }
-
-  /**
-   * Loads OLDER messages for scroll-up pagination.
-   * Anchored at the OLDEST message in our list.
+   * Scroll-up pagination — fetches messages older than what's currently loaded.
+   * Pulls from DB only (no Telegram backfill): all messages flow in via real-time
+   * starting from the moment the chat is created in CRM.
    */
   async function loadOlder(chatId: string): Promise<number> {
     const oldest = store.messages[0]
-    const before = oldest?.telegramMessageId ?? 0
+    if (!oldest) return 0
     try {
-      const fetched = await api<ChatMessage[]>(
-        `/chats/${chatId}/sync-history?before=${before}&limit=50`,
-        { method: 'POST' },
+      const older = await api<ChatMessage[]>(
+        `/chats/${chatId}/messages?before=${encodeURIComponent(oldest.createdAt)}`,
       )
-      return store.prependMessages(fetched)
+      // getMessages returns DESC, we want ascending in the array
+      return store.prependMessages(older.reverse())
     } catch {
       return 0
     }
@@ -91,9 +90,14 @@ export function useChats() {
   })
 
   const closeMutation = useMutation({
-    mutationFn: (chatId: string) => api<Chat>(`/chats/${chatId}/close`, { method: 'PATCH' }),
+    mutationFn: (payload: { chatId: string; data: ClosePayload }) =>
+      api<Chat>(`/chats/${payload.chatId}/close`, { method: 'PATCH', body: payload.data }),
     onSuccess: (chat) => { store.handleChatUpdated(chat) },
   })
+
+  function loadClientInfo(chatId: string) {
+    return api<ClientInfo>(`/chats/${chatId}/info`)
+  }
 
   function sendMessage(text: string) {
     if (!store.activeChat) return
@@ -101,7 +105,25 @@ export function useChats() {
   }
 
   function setupRealtime() {
-    const onNewMessage = (msg: ChatMessage & { client: ChatClient }) => store.handleNewMessage(msg)
+    let readSyncTimer: ReturnType<typeof setTimeout> | null = null
+
+    const onNewMessage = (msg: ChatMessage & { client: ChatClient }) => {
+      store.handleNewMessage(msg)
+
+      // If a client message arrived for the chat we're currently viewing,
+      // tell the backend (and Telegram) we've seen it. Debounced so a burst
+      // of messages only triggers one read receipt round-trip.
+      if (
+        msg.senderType === 'client' &&
+        store.activeChat?.id === msg.chatId
+      ) {
+        if (readSyncTimer) clearTimeout(readSyncTimer)
+        readSyncTimer = setTimeout(() => {
+          api(`/chats/${msg.chatId}/read`, { method: 'PATCH' }).catch(() => {})
+        }, 500)
+      }
+    }
+
     const onChatUpdated = (data: any) => store.handleChatUpdated(data)
     const onNewChat = (chat: Chat) => store.handleNewChat(chat)
 
@@ -110,6 +132,7 @@ export function useChats() {
     on('chat:new', onNewChat)
 
     onUnmounted(() => {
+      if (readSyncTimer) clearTimeout(readSyncTimer)
       off('message:new', onNewMessage)
       off('chat:updated', onChatUpdated)
       off('chat:new', onNewChat)
@@ -126,6 +149,7 @@ export function useChats() {
     sendMessage,
     assignChat: assignMutation.mutateAsync,
     closeChat: closeMutation.mutateAsync,
+    loadClientInfo,
     setupRealtime,
   }
 }

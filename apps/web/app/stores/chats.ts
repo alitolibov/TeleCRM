@@ -26,6 +26,7 @@ export interface Chat {
   client: ChatClient
   assignedUser?: { id: string; firstName: string; username: string } | null
   messages?: ChatMessage[]
+  lastMessage?: ChatMessage | null
 }
 
 export const useChatsStore = defineStore('chats', () => {
@@ -51,23 +52,24 @@ export const useChatsStore = defineStore('chats', () => {
     if (activeChat.value?.id === msg.chatId && !messages.value.some(m => m.id === msg.id)) {
       messages.value = [...messages.value, msg]
     }
+    // Reorder only — unreadCount and lastMessageAt come authoritatively from
+    // the chat:updated / chat:new event that the backend emits before this one.
+    // Incrementing here too would double-count notifications.
     const chat = chats.value.find(c => c.id === msg.chatId)
     if (chat) {
-      chat.lastMessageAt = msg.createdAt
-      if (activeChat.value?.id !== msg.chatId && msg.senderType === 'client') {
-        chat.unreadCount++
-      }
       chats.value = [chat, ...chats.value.filter(c => c.id !== msg.chatId)]
-    } else if (msg.client) {
-      // Incoming message for a chat we don't have in our list yet — fetch full chat
-      // info on next chat:new event. For now, add a minimal placeholder.
     }
   }
 
   function handleChatUpdated(data: Partial<Chat> & { id: string }) {
+    // If this chat is currently open, the manager is looking at it — never let
+    // the unread counter creep above zero, even if a fresh message just landed.
+    const isActive = activeChat.value?.id === data.id
+    const overrides = isActive && data.unreadCount !== undefined ? { unreadCount: 0 } : {}
+    const merged = { ...data, ...overrides }
     const idx = chats.value.findIndex(c => c.id === data.id)
-    if (idx !== -1) chats.value[idx] = { ...chats.value[idx], ...data } as Chat
-    if (activeChat.value?.id === data.id) activeChat.value = { ...activeChat.value, ...data } as Chat
+    if (idx !== -1) chats.value[idx] = { ...chats.value[idx], ...merged } as Chat
+    if (isActive) activeChat.value = { ...activeChat.value, ...merged } as Chat
   }
 
   function handleNewChat(chat: Chat) {
@@ -81,6 +83,7 @@ export const useChatsStore = defineStore('chats', () => {
     const chat = chats.value.find(c => c.id === msg.chatId)
     if (chat) {
       chat.lastMessageAt = msg.createdAt
+      chat.lastMessage = msg
       chats.value = [chat, ...chats.value.filter(c => c.id !== msg.chatId)]
     }
   }

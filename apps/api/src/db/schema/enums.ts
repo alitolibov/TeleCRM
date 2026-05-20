@@ -3,6 +3,7 @@ import { pgEnum } from 'drizzle-orm/pg-core'
 export const userRole = pgEnum('user_role', ['admin', 'manager'])
 export const userStatus = pgEnum('user_status', ['online', 'offline'])
 export const chatStatus = pgEnum('chat_status', ['new', 'active', 'closed'])
+export type ChatStatus = typeof chatStatus.enumValues[number]
 export const senderType = pgEnum('sender_type', ['client', 'manager', 'system'])
 export const contentType = pgEnum('content_type', [
   'text', 'photo', 'video', 'voice', 'document', 'sticker', 'unsupported',

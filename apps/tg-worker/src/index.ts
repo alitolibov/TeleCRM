@@ -3,10 +3,11 @@ import { config } from './config.js'
 import { createTdlibClient } from './tdlib.js'
 import { loginHandlers, closeReadline } from './auth.js'
 import { connectRedis, redis } from './redis.js'
-import { setupMessageHandler, syncChats } from './messages.js'
+import { setupMessageHandler } from './messages.js'
 import { setupSender } from './sender.js'
 import { setupConnectionMonitor } from './connection.js'
 import { setupHistoryWorker } from './history.js'
+import { setupFileWorker } from './files.js'
 
 console.log(`[tg-worker] starting ${APP_NAME}...`)
 
@@ -39,14 +40,12 @@ try {
   console.log(`[tg-worker] logged in as ${me.first_name} (id: ${me.id})`)
 
   setupConnectionMonitor(client)
-  setupMessageHandler(client)
+  setupMessageHandler(client, me.id)
   setupSender(client)
   setupHistoryWorker(client)
+  setupFileWorker(client)
 
   console.log('[tg-worker] ready — listening for messages...')
-
-  // Seed CRM with all private chats from Telegram (not just ones that ping while online)
-  syncChats(client, 200).catch((e) => console.error('[tg-worker] sync failed:', e))
 } catch (err) {
   console.error('[tg-worker] fatal error:', err)
   closeReadline()
