@@ -13,19 +13,34 @@ export function setupFileWorker(client: any) {
   const worker = new Worker<TgFileRequestJob, TgFileResponse>(
     REDIS_QUEUES.tgFileRequest,
     async (job: Job<TgFileRequestJob, TgFileResponse>) => {
-      const { fileId } = job.data
+      const { fileId, remoteFileId } = job.data
       try {
-        // synchronous: true — wait until TDLib finishes downloading (or finds it locally)
+        // Local file IDs are session-scoped and get reused across worker restarts.
+        // If we have a stable remote ID, resolve it to the current local ID first.
+        let actualFileId = fileId
+        if (remoteFileId) {
+          try {
+            const remoteFile = await client.invoke({
+              _: 'getRemoteFile',
+              remote_file_id: remoteFileId,
+              file_type: { _: 'fileTypeNone' },
+            })
+            if (remoteFile?.id) actualFileId = remoteFile.id
+          } catch (e) {
+            console.warn(`[tg-worker] getRemoteFile failed for ${remoteFileId}, falling back to local id ${fileId}`)
+          }
+        }
+
         const file = await client.invoke({
           _: 'downloadFile',
-          file_id: fileId,
+          file_id: actualFileId,
           priority: 1,
           offset: 0,
           limit: 0,
           synchronous: true,
         })
         const path = file?.local?.path ?? null
-        if (path) console.log(`[tg-worker] file ${fileId} → ${path}`)
+        if (path) console.log(`[tg-worker] file ${actualFileId} → ${path}`)
         return { path }
       } catch (e) {
         console.error(`[tg-worker] download file ${fileId} failed:`, (e as Error).message)

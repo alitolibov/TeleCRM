@@ -52,6 +52,7 @@ export function parseContent(tdContent: any): TgMessageContent {
         type: 'photo',
         caption: tdContent.caption?.text || undefined,
         fileId: largest.photo.id,
+        remoteFileId: largest.photo.remote?.id || undefined,
         width: largest.width,
         height: largest.height,
       }
@@ -62,6 +63,7 @@ export function parseContent(tdContent: any): TgMessageContent {
         type: 'video',
         caption: tdContent.caption?.text || undefined,
         fileId: tdContent.video.video.id,
+        remoteFileId: tdContent.video.video.remote?.id || undefined,
         duration: tdContent.video.duration,
       }
 
@@ -69,6 +71,7 @@ export function parseContent(tdContent: any): TgMessageContent {
       return {
         type: 'voice',
         fileId: tdContent.voice_note.voice.id,
+        remoteFileId: tdContent.voice_note.voice.remote?.id || undefined,
         duration: tdContent.voice_note.duration,
       }
 
@@ -76,6 +79,7 @@ export function parseContent(tdContent: any): TgMessageContent {
       return {
         type: 'videoNote',
         fileId: tdContent.video_note.video.id,
+        remoteFileId: tdContent.video_note.video.remote?.id || undefined,
         duration: tdContent.video_note.duration,
         length: tdContent.video_note.length,
       }
@@ -85,6 +89,7 @@ export function parseContent(tdContent: any): TgMessageContent {
         type: 'document',
         caption: tdContent.caption?.text || undefined,
         fileId: tdContent.document.document.id,
+        remoteFileId: tdContent.document.document.remote?.id || undefined,
         fileName: tdContent.document.file_name,
         mimeType: tdContent.document.mime_type,
         size: tdContent.document.document.size,
@@ -94,6 +99,7 @@ export function parseContent(tdContent: any): TgMessageContent {
       return {
         type: 'sticker',
         fileId: tdContent.sticker.sticker.id,
+        remoteFileId: tdContent.sticker.sticker.remote?.id || undefined,
         emoji: tdContent.sticker.emoji,
       }
 

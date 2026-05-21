@@ -19,12 +19,12 @@ export type TgIncomingEvent = TgMessageEvent
 
 export type TgMessageContent =
   | { type: 'text'; text: string }
-  | { type: 'photo'; caption?: string; fileId: number; width: number; height: number }
-  | { type: 'video'; caption?: string; fileId: number; duration: number }
-  | { type: 'videoNote'; fileId: number; duration: number; length: number }
-  | { type: 'voice'; fileId: number; duration: number }
-  | { type: 'document'; caption?: string; fileId: number; fileName: string; mimeType: string; size: number }
-  | { type: 'sticker'; fileId: number; emoji: string }
+  | { type: 'photo'; caption?: string; fileId: number; remoteFileId?: string; width: number; height: number }
+  | { type: 'video'; caption?: string; fileId: number; remoteFileId?: string; duration: number }
+  | { type: 'videoNote'; fileId: number; remoteFileId?: string; duration: number; length: number }
+  | { type: 'voice'; fileId: number; remoteFileId?: string; duration: number }
+  | { type: 'document'; caption?: string; fileId: number; remoteFileId?: string; fileName: string; mimeType: string; size: number }
+  | { type: 'sticker'; fileId: number; remoteFileId?: string; emoji: string }
   | { type: 'unsupported' }
 
 export interface TgConnectionEvent {

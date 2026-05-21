@@ -186,9 +186,9 @@
               </template>
 
               <template v-else-if="msg.content?.type === 'photo'">
-                <a :href="fileUrl(msg.content.fileId)" target="_blank" rel="noopener" class="media-wrap">
+                <a :href="fileUrl(msg.content.fileId, msg.content.remoteFileId)" target="_blank" rel="noopener" class="media-wrap">
                   <img
-                    :src="fileUrl(msg.content.fileId)"
+                    :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
                     :alt="msg.content.caption || 'photo'"
                     loading="lazy"
                     class="media-img"
@@ -202,7 +202,7 @@
 
               <template v-else-if="msg.content?.type === 'voice'">
                 <VoicePlayer
-                  :src="fileUrl(msg.content.fileId)"
+                  :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
                   :duration="msg.content.duration"
                   :outgoing="msg.senderType === 'manager'"
                   :time="formatMessageTime(msg.createdAt)"
@@ -214,7 +214,7 @@
                   <video
                     controls
                     preload="metadata"
-                    :src="fileUrl(msg.content.fileId)"
+                    :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
                     class="media-img"
                   />
                   <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}</span>
@@ -227,7 +227,7 @@
               <template v-else-if="msg.content?.type === 'videoNote'">
                 <div class="video-note" @click="toggleVideoNote">
                   <video
-                    :src="fileUrl(msg.content.fileId)"
+                    :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
                     playsinline
                     loop
                     muted
@@ -245,7 +245,7 @@
 
               <template v-else-if="msg.content?.type === 'document'">
                 <a
-                  :href="fileUrl(msg.content.fileId)"
+                  :href="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
                   :download="msg.content.fileName"
                   target="_blank"
                   class="doc-attachment"
@@ -649,8 +649,9 @@ const { getToken } = useAuth()
 const { connect } = useSocket()
 const config = useRuntimeConfig()
 
-function fileUrl(fileId: number) {
-  return `${config.public.apiUrl}/files/${fileId}`
+function fileUrl(fileId: number, remoteFileId?: string) {
+  const base = `${config.public.apiUrl}/files/${fileId}`
+  return remoteFileId ? `${base}?r=${encodeURIComponent(remoteFileId)}` : base
 }
 
 function formatBytes(bytes?: number) {

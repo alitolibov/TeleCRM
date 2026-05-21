@@ -23,6 +23,7 @@ export interface TgHistoryResponse {
 
 export interface TgFileRequestJob {
   fileId: number
+  remoteFileId?: string
 }
 
 export interface TgFileResponse {
