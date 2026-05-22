@@ -1,6 +1,12 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq'
 import { Job } from 'bullmq'
-import type { TgMessageEvent, TgReadSyncEvent } from '@telecrm/shared'
+import type {
+  TgMessageEvent,
+  TgReadSyncEvent,
+  TgMessageEditedEvent,
+  TgMessageDeletedEvent,
+  TgMessageIdRemapEvent,
+} from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { ChatsService } from './chats.service'
 
@@ -23,5 +29,38 @@ export class ChatsReadSyncProcessor extends WorkerHost {
 
   async process(job: Job<TgReadSyncEvent>): Promise<void> {
     await this.chatsService.applyExternalRead(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgIncomingEdited)
+export class ChatsEditedProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgMessageEditedEvent>): Promise<void> {
+    await this.chatsService.applyExternalEdit(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgIncomingDeleted)
+export class ChatsDeletedProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgMessageDeletedEvent>): Promise<void> {
+    await this.chatsService.applyExternalDelete(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgIdRemap)
+export class ChatsIdRemapProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgMessageIdRemapEvent>): Promise<void> {
+    await this.chatsService.remapMessageId(job.data)
   }
 }

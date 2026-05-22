@@ -11,6 +11,11 @@ export const REDIS_QUEUES = {
   tgHistoryRequest: 'tg-history-request',
   tgFileRequest: 'tg-file-request',
   tgReadSync: 'tg-read-sync',
+  tgEdit: 'tg-edit',
+  tgDelete: 'tg-delete',
+  tgIncomingEdited: 'tg-incoming-edited',
+  tgIncomingDeleted: 'tg-incoming-deleted',
+  tgIdRemap: 'tg-id-remap',
 } as const
 
 export type {
@@ -19,6 +24,9 @@ export type {
   TgMessageContent,
   TgConnectionEvent,
   TgReadSyncEvent,
+  TgMessageEditedEvent,
+  TgMessageDeletedEvent,
+  TgMessageIdRemapEvent,
 } from './events.js'
 export type {
   TgOutgoingJob,
@@ -27,4 +35,6 @@ export type {
   TgHistoryResponse,
   TgFileRequestJob,
   TgFileResponse,
+  TgEditJob,
+  TgDeleteJob,
 } from './jobs.js'

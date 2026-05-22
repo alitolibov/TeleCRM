@@ -10,6 +10,11 @@ import type {
   TgHistoryRequestJob,
   TgHistoryResponse,
   TgReadSyncEvent,
+  TgEditJob,
+  TgDeleteJob,
+  TgMessageEditedEvent,
+  TgMessageDeletedEvent,
+  TgMessageIdRemapEvent,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { DRIZZLE } from '../db/drizzle.module'
@@ -19,24 +24,31 @@ import { ChatsGateway } from './chats.gateway'
 @Injectable()
 export class ChatsService implements OnModuleInit, OnModuleDestroy {
   private historyEvents!: QueueEvents
+  private editEvents!: QueueEvents
+  private deleteEvents!: QueueEvents
 
   constructor(
     @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
     @InjectQueue(REDIS_QUEUES.tgOutgoing) private outgoingQueue: Queue<TgOutgoingJob>,
     @InjectQueue(REDIS_QUEUES.tgHistoryRequest) private historyQueue: Queue<TgHistoryRequestJob, TgHistoryResponse>,
+    @InjectQueue(REDIS_QUEUES.tgEdit) private editQueue: Queue<TgEditJob>,
+    @InjectQueue(REDIS_QUEUES.tgDelete) private deleteQueue: Queue<TgDeleteJob>,
     private configService: ConfigService,
     @Optional() private gateway: ChatsGateway,
   ) {}
 
   async onModuleInit() {
     const url = new URL(this.configService.get('REDIS_URL', 'redis://localhost:6379'))
-    this.historyEvents = new QueueEvents(REDIS_QUEUES.tgHistoryRequest, {
-      connection: { host: url.hostname, port: Number(url.port) || 6379 },
-    })
+    const connection = { host: url.hostname, port: Number(url.port) || 6379 }
+    this.historyEvents = new QueueEvents(REDIS_QUEUES.tgHistoryRequest, { connection })
+    this.editEvents = new QueueEvents(REDIS_QUEUES.tgEdit, { connection })
+    this.deleteEvents = new QueueEvents(REDIS_QUEUES.tgDelete, { connection })
   }
 
   async onModuleDestroy() {
     await this.historyEvents?.close().catch(() => {})
+    await this.editEvents?.close().catch(() => {})
+    await this.deleteEvents?.close().catch(() => {})
   }
 
   async processIncomingEvent(event: TgMessageEvent) {
@@ -143,6 +155,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         isRead: event.isOutgoing,
         status: 'sent',
         createdAt: new Date(event.date * 1000),
+        replyToTgId: event.replyToMessageId ?? null,
       })
       .onConflictDoNothing()
       .returning()
@@ -238,8 +251,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   async getMessages(chatId: string, before?: string) {
     return this.db.query.messages.findMany({
       where: before
-        ? (m, { eq, lt, and }) => and(eq(m.chatId, chatId), lt(m.createdAt, new Date(before)))
-        : (m, { eq }) => eq(m.chatId, chatId),
+        ? (m, { eq, lt, and }) => and(eq(m.chatId, chatId), eq(m.isDeleted, false), lt(m.createdAt, new Date(before)))
+        : (m, { eq, and }) => and(eq(m.chatId, chatId), eq(m.isDeleted, false)),
       orderBy: (m, { desc }) => desc(m.createdAt),
       limit: 50,
     })
@@ -505,16 +518,27 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async sendMessage(chatId: string, text: string, senderId: string) {
+  async sendMessage(chatId: string, text: string, senderId: string, replyToMessageId?: string) {
     const chat = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
       with: { client: true },
     })
     if (!chat) throw new Error('Chat not found')
 
+    // Resolve UUID → TG message id for the reply target (if any)
+    let replyTo: number | undefined
+    if (replyToMessageId) {
+      const target = await this.db.query.messages.findFirst({
+        where: (m, { eq, and }) => and(eq(m.id, replyToMessageId), eq(m.chatId, chatId)),
+        columns: { telegramMessageId: true },
+      })
+      if (target) replyTo = target.telegramMessageId
+    }
+
     await this.outgoingQueue.add('send', {
       chatId: chat.client.telegramId,
       content: { type: 'text', text },
+      replyToMessageId: replyTo,
     })
 
     const [message] = await this.db
@@ -529,6 +553,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         isRead: true,
         status: 'sending', // marker — replaced with 'sent' + real Telegram ID when TDLib echoes back
         createdAt: new Date(),
+        replyToTgId: replyTo ?? null,
       })
       .returning()
 
@@ -682,4 +707,193 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     return { queued: true, contentType, fileName }
   }
+
+  // === Edit / Delete ===
+
+  async editMessage(chatId: string, messageId: string, text: string, userId: string) {
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(eq(m.id, messageId), eq(m.chatId, chatId)),
+    })
+    if (!message) throw new Error('Message not found')
+    if (message.isDeleted) throw new Error('Message is deleted')
+    if (message.senderType !== 'manager') {
+      throw new Error('Cannot edit client messages')
+    }
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: { client: true },
+    })
+    if (!chat) throw new Error('Chat not found')
+    void userId  // currently only checking sender type — any manager can edit our outgoing
+
+    // Text messages: replace `text`. Media: replace `caption`.
+    const oldContent = message.content as any
+    const isText = oldContent.type === 'text'
+    const newContent = isText
+      ? { ...oldContent, text }
+      : { ...oldContent, caption: text }
+
+    // Transactional: TDLib must succeed BEFORE we change the DB.
+    // Otherwise CRM would show "edited" while the client still sees the old text.
+    const job = await this.editQueue.add('edit', {
+      chatId: chat.client.telegramId,
+      messageId: message.telegramMessageId,
+      text,
+      isCaption: !isText,
+    })
+    try {
+      await job.waitUntilFinished(this.editEvents, 30_000)
+    } catch (err) {
+      throw new Error(`Telegram edit failed: ${(err as Error).message}`)
+    }
+
+    const editedAt = new Date()
+    const [updated] = await this.db
+      .update(schema.messages)
+      .set({ content: newContent, editedAt })
+      .where(eq(schema.messages.id, messageId))
+      .returning()
+
+    this.gateway?.emitMessageEdited(chatId, {
+      id: updated.id,
+      chatId,
+      content: newContent,
+      editedAt: editedAt.toISOString(),
+    })
+
+    return updated
+  }
+
+  async deleteMessage(chatId: string, messageId: string, userId: string) {
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(eq(m.id, messageId), eq(m.chatId, chatId)),
+    })
+    if (!message) throw new Error('Message not found')
+    if (message.isDeleted) return
+    if (message.senderType !== 'manager') {
+      throw new Error('Cannot delete client messages')
+    }
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: { client: true },
+    })
+    if (!chat) throw new Error('Chat not found')
+    void userId  // any manager can delete our outgoing
+
+    // Wait for TDLib confirmation before soft-deleting locally.
+    const job = await this.deleteQueue.add('delete', {
+      chatId: chat.client.telegramId,
+      messageIds: [message.telegramMessageId],
+      revoke: true,
+    })
+    try {
+      await job.waitUntilFinished(this.deleteEvents, 30_000)
+    } catch (err) {
+      throw new Error(`Telegram delete failed: ${(err as Error).message}`)
+    }
+
+    await this.db
+      .update(schema.messages)
+      .set({ isDeleted: true })
+      .where(eq(schema.messages.id, messageId))
+
+    this.gateway?.emitMessageDeleted(chatId, { ids: [messageId] })
+  }
+
+  /** Apply an edit that happened on the Telegram side (client edited their own message). */
+  async applyExternalEdit(event: TgMessageEditedEvent) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, sql`(SELECT id FROM chats WHERE client_id = (SELECT id FROM clients WHERE telegram_id = ${event.chatId}))`),
+    })
+    if (!chat) return
+
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(eq(m.chatId, chat.id), eq(m.telegramMessageId, event.messageId)),
+    })
+    if (!message) return
+
+    const editedAt = new Date(event.editDate * 1000)
+    const [updated] = await this.db
+      .update(schema.messages)
+      .set({ content: event.content, editedAt })
+      .where(eq(schema.messages.id, message.id))
+      .returning()
+
+    this.gateway?.emitMessageEdited(chat.id, {
+      id: updated.id,
+      chatId: chat.id,
+      content: event.content,
+      editedAt: editedAt.toISOString(),
+    })
+  }
+
+  /** Apply a delete that happened on the Telegram side. */
+  async applyExternalDelete(event: TgMessageDeletedEvent) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, sql`(SELECT id FROM chats WHERE client_id = (SELECT id FROM clients WHERE telegram_id = ${event.chatId}))`),
+    })
+    if (!chat) return
+
+    const rows = await this.db.query.messages.findMany({
+      where: (m, { eq, and, inArray }) => and(
+        eq(m.chatId, chat.id),
+        inArray(m.telegramMessageId, event.messageIds),
+      ),
+      columns: { id: true },
+    })
+    if (rows.length === 0) return
+
+    await this.db
+      .update(schema.messages)
+      .set({ isDeleted: true })
+      .where(and(
+        eq(schema.messages.chatId, chat.id),
+        sql`${schema.messages.telegramMessageId} = ANY(${event.messageIds})`,
+      ))
+
+    this.gateway?.emitMessageDeleted(chat.id, { ids: rows.map(r => r.id) })
+  }
+
+  /**
+   * Remap a message row's telegram_message_id when TDLib transitions a sent
+   * message from its temporary id (seen via updateNewMessage) to the
+   * permanent one (via updateMessageSendSucceeded). Without this, subsequent
+   * edits/deletes hit "Message not found" because we'd be using a stale id.
+   */
+  async remapMessageId(event: TgMessageIdRemapEvent) {
+    if (event.oldMessageId === event.newMessageId) return
+
+    // Resolve telegram chat_id (bigint) → our chat UUID
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, sql`(SELECT id FROM chats WHERE client_id = (SELECT id FROM clients WHERE telegram_id = ${event.chatId}))`),
+      columns: { id: true },
+    })
+    if (!chat) return
+
+    // If a row with the new id already exists (race), prefer it and drop the old one.
+    const newRow = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(eq(m.chatId, chat.id), eq(m.telegramMessageId, event.newMessageId)),
+      columns: { id: true },
+    })
+    if (newRow) {
+      await this.db
+        .delete(schema.messages)
+        .where(and(
+          eq(schema.messages.chatId, chat.id),
+          eq(schema.messages.telegramMessageId, event.oldMessageId),
+        ))
+      return
+    }
+
+    await this.db
+      .update(schema.messages)
+      .set({ telegramMessageId: event.newMessageId })
+      .where(and(
+        eq(schema.messages.chatId, chat.id),
+        eq(schema.messages.telegramMessageId, event.oldMessageId),
+      ))
+  }
+
 }

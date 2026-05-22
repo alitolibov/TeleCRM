@@ -4,7 +4,13 @@ import { JwtModule } from '@nestjs/jwt'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { ChatsController } from './chats.controller'
 import { ChatsService } from './chats.service'
-import { ChatsProcessor, ChatsReadSyncProcessor } from './chats.processor'
+import {
+  ChatsProcessor,
+  ChatsReadSyncProcessor,
+  ChatsEditedProcessor,
+  ChatsDeletedProcessor,
+  ChatsIdRemapProcessor,
+} from './chats.processor'
 import { ChatsGateway } from './chats.gateway'
 import { REDIS_QUEUES } from '@telecrm/shared'
 
@@ -15,6 +21,11 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       { name: REDIS_QUEUES.tgOutgoing },
       { name: REDIS_QUEUES.tgHistoryRequest },
       { name: REDIS_QUEUES.tgReadSync },
+      { name: REDIS_QUEUES.tgEdit },
+      { name: REDIS_QUEUES.tgDelete },
+      { name: REDIS_QUEUES.tgIncomingEdited },
+      { name: REDIS_QUEUES.tgIncomingDeleted },
+      { name: REDIS_QUEUES.tgIdRemap },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -25,6 +36,14 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     }),
   ],
   controllers: [ChatsController],
-  providers: [ChatsService, ChatsProcessor, ChatsReadSyncProcessor, ChatsGateway],
+  providers: [
+    ChatsService,
+    ChatsProcessor,
+    ChatsReadSyncProcessor,
+    ChatsEditedProcessor,
+    ChatsDeletedProcessor,
+    ChatsIdRemapProcessor,
+    ChatsGateway,
+  ],
 })
 export class ChatsModule {}

@@ -15,6 +15,8 @@ export interface ChatMessage {
   content: any
   isRead: boolean
   createdAt: string
+  editedAt?: string | null
+  replyToTgId?: number | null
 }
 
 export interface Chat {
@@ -88,6 +90,20 @@ export const useChatsStore = defineStore('chats', () => {
     }
   }
 
+  function handleMessageEdited(payload: { id: string; chatId: string; content: any; editedAt: string }) {
+    if (activeChat.value?.id !== payload.chatId) return
+    const idx = messages.value.findIndex(m => m.id === payload.id)
+    if (idx === -1) return
+    messages.value = messages.value.map((m, i) =>
+      i === idx ? { ...m, content: payload.content, editedAt: payload.editedAt } : m,
+    )
+  }
+
+  function handleMessagesDeleted(payload: { ids: string[] }) {
+    const setIds = new Set(payload.ids)
+    messages.value = messages.value.filter(m => !setIds.has(m.id))
+  }
+
   /** Insert older messages at the top of the list, sorted chronologically. */
   function prependMessages(msgs: ChatMessage[]) {
     if (msgs.length === 0) return 0
@@ -104,6 +120,7 @@ export const useChatsStore = defineStore('chats', () => {
     chats, activeChat, messages, totalUnread,
     setChats, setActiveChat, markActiveChatRead,
     handleNewMessage, handleChatUpdated, handleNewChat,
+    handleMessageEdited, handleMessagesDeleted,
     addMessage, prependMessages,
   }
 })

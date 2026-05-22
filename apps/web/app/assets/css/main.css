@@ -1,10 +1,25 @@
 @layer tailwind-base, primevue, tailwind-utilities;
-@layer tailwind-base { @tailwind base; }
-@layer tailwind-utilities { @tailwind components; @tailwind utilities; }
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+@layer tailwind-base {
+  @tailwind base;
+}
 
-html, body, #__nuxt {
+@layer tailwind-utilities {
+  @tailwind components;
+  @tailwind utilities;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#__nuxt {
   height: 100%;
   font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -13,21 +28,53 @@ html, body, #__nuxt {
 }
 
 /* Inherit text color from PrimeVue's semantic token so it adapts per theme */
-html, body {
+html,
+body {
   color: var(--p-text-color);
   background: var(--p-content-background);
 }
 
-button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-input, textarea, select { font-family: inherit; color: inherit; }
-a { color: inherit; text-decoration: none; }
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+}
 
-.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
 
 /* === Chat-specific design tokens === */
 [data-theme="light"] {
@@ -60,9 +107,13 @@ a { color: inherit; text-decoration: none; }
   --divider: rgba(255, 255, 255, 0.08);
 }
 
-::selection { background: color-mix(in srgb, var(--p-primary-color) 30%, transparent); }
+::selection {
+  background: color-mix(in srgb, var(--p-primary-color) 30%, transparent);
+}
 
 /* Smooth theme transitions */
-body, .p-component, .p-component * {
+body,
+.p-component,
+.p-component * {
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }

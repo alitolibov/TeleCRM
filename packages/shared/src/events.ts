@@ -12,6 +12,8 @@ export interface TgMessageEvent {
   date: number
   /** TDLib's authoritative unread count at time of capture (incoming only). */
   unreadCount?: number
+  /** TG message id of the message this one replies to, if any. */
+  replyToMessageId?: number
 }
 
 /** @deprecated use TgMessageEvent */
@@ -40,4 +42,30 @@ export interface TgReadSyncEvent {
   chatId: number              // telegram chat id (= client's user_id for private chats)
   lastReadMessageId: number   // newest message ID that has been read
   unreadCount: number         // remaining unread messages
+}
+
+/** Fired by TDLib when a message (own or client's) was edited. */
+export interface TgMessageEditedEvent {
+  chatId: number
+  messageId: number
+  content: TgMessageContent
+  editDate: number            // unix seconds
+}
+
+/** Fired by TDLib when messages were deleted in a chat. */
+export interface TgMessageDeletedEvent {
+  chatId: number
+  messageIds: number[]
+}
+
+/**
+ * Fired by TDLib after our outgoing message has been successfully delivered —
+ * at this point its message id changes from a temporary one (seen earlier via
+ * updateNewMessage) to a permanent one. CRM must remap the row to the new id
+ * so subsequent edit/delete calls work.
+ */
+export interface TgMessageIdRemapEvent {
+  chatId: number
+  oldMessageId: number
+  newMessageId: number
 }

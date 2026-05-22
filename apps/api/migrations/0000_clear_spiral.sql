@@ -66,6 +66,9 @@ CREATE TABLE "messages" (
 	"content_type" "content_type" NOT NULL,
 	"content" jsonb NOT NULL,
 	"is_read" boolean DEFAULT false NOT NULL,
+	"is_deleted" boolean DEFAULT false NOT NULL,
+	"edited_at" timestamp with time zone,
+	"reply_to_tg_id" bigint,
 	"status" "message_status" DEFAULT 'sent' NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"received_at" timestamp with time zone DEFAULT now() NOT NULL

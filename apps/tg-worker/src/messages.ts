@@ -1,5 +1,12 @@
 import { Queue } from 'bullmq'
-import type { TgMessageContent, TgMessageEvent, TgReadSyncEvent } from '@telecrm/shared'
+import type {
+  TgMessageContent,
+  TgMessageEvent,
+  TgReadSyncEvent,
+  TgMessageEditedEvent,
+  TgMessageDeletedEvent,
+  TgMessageIdRemapEvent,
+} from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
 
@@ -16,6 +23,21 @@ const messageQueue = new Queue<TgMessageEvent>(REDIS_QUEUES.tgIncoming, {
 const readSyncQueue = new Queue<TgReadSyncEvent>(REDIS_QUEUES.tgReadSync, {
   connection: buildRedisConnection(),
   defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
+})
+
+const editedQueue = new Queue<TgMessageEditedEvent>(REDIS_QUEUES.tgIncomingEdited, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
+})
+
+const deletedQueue = new Queue<TgMessageDeletedEvent>(REDIS_QUEUES.tgIncomingDeleted, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
+})
+
+const idRemapQueue = new Queue<TgMessageIdRemapEvent>(REDIS_QUEUES.tgIdRemap, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
 })
 
 const userCache = new Map<number, any>()
@@ -237,6 +259,7 @@ export function setupMessageHandler(client: any, myUserId: number) {
       content: parseContent(msg.content),
       date: msg.date,
       unreadCount,
+      replyToMessageId: msg.reply_to?.message_id || undefined,
     }
 
     // jobId = chatId-messageId ensures deduplication if TDLib replays backlog
@@ -249,5 +272,75 @@ export function setupMessageHandler(client: any, myUserId: number) {
       : `[${event.content.type}]`
     const arrow = isOutgoing ? '←' : '→'
     console.log(`[tg-worker] ${arrow} chat ${event.chatId}: ${preview}`)
+  })
+
+  // Edit: TDLib fires updateMessageContent when message body changes (text/caption/media)
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateMessageContent') return
+    if (update.chat_id <= 0) return
+    if (update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+
+    // edit_date is on the message itself, not on this update — fetch it
+    let editDate = Math.floor(Date.now() / 1000)
+    try {
+      const msg = await client.invoke({
+        _: 'getMessage',
+        chat_id: update.chat_id,
+        message_id: update.message_id,
+      })
+      if (msg?.edit_date) editDate = msg.edit_date
+    } catch {}
+
+    const event: TgMessageEditedEvent = {
+      chatId: update.chat_id,
+      messageId: update.message_id,
+      content: parseContent(update.new_content),
+      editDate,
+    }
+    await editedQueue.add('edited', event).catch((e) =>
+      console.error('[tg-worker] edited enqueue failed:', e),
+    )
+    console.log(`[tg-worker] ✎ msg ${event.messageId} edited in chat ${event.chatId}`)
+  })
+
+  // Delete: TDLib fires updateDeleteMessages on actual deletion (when is_permanent=true)
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateDeleteMessages') return
+    if (update.chat_id <= 0) return
+    if (update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+    if (!update.is_permanent) return                       // ignore "from cache" deletions
+
+    const event: TgMessageDeletedEvent = {
+      chatId: update.chat_id,
+      messageIds: update.message_ids ?? [],
+    }
+    if (event.messageIds.length === 0) return
+    await deletedQueue.add('deleted', event).catch((e) =>
+      console.error('[tg-worker] deleted enqueue failed:', e),
+    )
+    console.log(`[tg-worker] ✕ ${event.messageIds.length} msg(s) deleted in chat ${event.chatId}`)
+  })
+
+  // ID remap: TDLib assigns a TEMPORARY message id when sendMessage is invoked.
+  // Once the server confirms, it fires updateMessageSendSucceeded with the FINAL id.
+  // Without remapping our DB row, subsequent edits/deletes fail with "Message not found".
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateMessageSendSucceeded') return
+    const msg = update.message
+    if (!msg) return
+    if (msg.chat_id <= 0 || msg.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(msg.chat_id)) return
+
+    const event: TgMessageIdRemapEvent = {
+      chatId: msg.chat_id,
+      oldMessageId: update.old_message_id,
+      newMessageId: msg.id,
+    }
+    await idRemapQueue.add('remap', event).catch((e) =>
+      console.error('[tg-worker] id-remap enqueue failed:', e),
+    )
+    console.log(`[tg-worker] ↻ remap ${event.oldMessageId} → ${event.newMessageId} in chat ${event.chatId}`)
   })
 }

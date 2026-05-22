@@ -77,8 +77,8 @@ export function useChats() {
   }
 
   const sendMutation = useMutation({
-    mutationFn: ({ chatId, text }: { chatId: string; text: string }) =>
-      api<ChatMessage>(`/chats/${chatId}/messages`, { method: 'POST', body: { text } }),
+    mutationFn: ({ chatId, text, replyTo }: { chatId: string; text: string; replyTo?: string }) =>
+      api<ChatMessage>(`/chats/${chatId}/messages`, { method: 'POST', body: { text, replyTo } }),
     onSuccess: (msg) => { store.addMessage(msg) },
   })
 
@@ -99,13 +99,37 @@ export function useChats() {
     onSuccess: (chat) => { store.handleChatUpdated(chat) },
   })
 
+  const editMessageMutation = useMutation({
+    mutationFn: (p: { chatId: string; messageId: string; text: string }) =>
+      api<ChatMessage>(`/chats/${p.chatId}/messages/${p.messageId}`, {
+        method: 'PATCH',
+        body: { text: p.text },
+      }),
+    onSuccess: (msg) => {
+      store.handleMessageEdited({
+        id: msg.id,
+        chatId: msg.chatId,
+        content: msg.content,
+        editedAt: msg.editedAt ?? new Date().toISOString(),
+      })
+    },
+  })
+
+  const deleteMessageMutation = useMutation({
+    mutationFn: (p: { chatId: string; messageId: string }) =>
+      api(`/chats/${p.chatId}/messages/${p.messageId}`, { method: 'DELETE' }),
+    onSuccess: (_data, vars) => {
+      store.handleMessagesDeleted({ ids: [vars.messageId] })
+    },
+  })
+
   function loadClientInfo(chatId: string) {
     return api<ClientInfo>(`/chats/${chatId}/info`)
   }
 
-  function sendMessage(text: string) {
+  function sendMessage(text: string, replyTo?: string) {
     if (!store.activeChat) return
-    return sendMutation.mutateAsync({ chatId: store.activeChat.id, text })
+    return sendMutation.mutateAsync({ chatId: store.activeChat.id, text, replyTo })
   }
 
   function setupRealtime() {
@@ -130,17 +154,33 @@ export function useChats() {
 
     const onChatUpdated = (data: any) => store.handleChatUpdated(data)
     const onNewChat = (chat: Chat) => store.handleNewChat(chat)
+    const onMessageEdited = (payload: any) => store.handleMessageEdited(payload)
+    const onMessagesDeleted = (payload: any) => store.handleMessagesDeleted(payload)
 
     on('message:new', onNewMessage)
     on('chat:updated', onChatUpdated)
     on('chat:new', onNewChat)
+    on('message:edited', onMessageEdited)
+    on('message:deleted', onMessagesDeleted)
 
     onUnmounted(() => {
       if (readSyncTimer) clearTimeout(readSyncTimer)
       off('message:new', onNewMessage)
       off('chat:updated', onChatUpdated)
       off('chat:new', onNewChat)
+      off('message:edited', onMessageEdited)
+      off('message:deleted', onMessagesDeleted)
     })
+  }
+
+  function editMessage(messageId: string, text: string) {
+    if (!store.activeChat) return
+    return editMessageMutation.mutateAsync({ chatId: store.activeChat.id, messageId, text })
+  }
+
+  function deleteMessage(messageId: string) {
+    if (!store.activeChat) return
+    return deleteMessageMutation.mutateAsync({ chatId: store.activeChat.id, messageId })
   }
 
   return {
@@ -151,6 +191,8 @@ export function useChats() {
     openChat,
     loadOlder,
     sendMessage,
+    editMessage,
+    deleteMessage,
     assignChat: assignMutation.mutateAsync,
     closeChat: closeMutation.mutateAsync,
     reopenChat: reopenMutation.mutateAsync,

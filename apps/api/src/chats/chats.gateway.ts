@@ -70,4 +70,12 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitNewChat(chat: unknown) {
     this.server.emit('chat:new', chat)
   }
+
+  emitMessageEdited(_chatId: string, payload: unknown) {
+    this.server.emit('message:edited', payload)
+  }
+
+  emitMessageDeleted(_chatId: string, payload: unknown) {
+    this.server.emit('message:deleted', payload)
+  }
 }

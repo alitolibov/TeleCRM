@@ -1,5 +1,5 @@
 {
-  "id": "a29cb874-342d-4743-b1fe-e0201c8833ef",
+  "id": "75da6d89-8de4-4946-bdb0-ed33632fdc69",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -507,6 +507,25 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "is_deleted": {
+          "name": "is_deleted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "edited_at": {
+          "name": "edited_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reply_to_tg_id": {
+          "name": "reply_to_tg_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",

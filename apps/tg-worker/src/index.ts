@@ -8,6 +8,7 @@ import { setupSender } from './sender.js'
 import { setupConnectionMonitor } from './connection.js'
 import { setupHistoryWorker } from './history.js'
 import { setupFileWorker } from './files.js'
+import { setupEditor } from './editor.js'
 
 console.log(`[tg-worker] starting ${APP_NAME}...`)
 
@@ -44,6 +45,7 @@ try {
   setupSender(client)
   setupHistoryWorker(client)
   setupFileWorker(client)
+  setupEditor(client)
 
   console.log('[tg-worker] ready — listening for messages...')
 } catch (err) {

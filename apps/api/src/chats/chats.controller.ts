@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -22,6 +23,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { ChatsService } from './chats.service'
 import { SendMessageDto } from './dto/send-message.dto'
 import { CloseChatDto } from './dto/close-chat.dto'
+import { EditMessageDto } from './dto/edit-message.dto'
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -79,7 +81,27 @@ export class ChatsController {
     @Body() dto: SendMessageDto,
     @CurrentUser() user: { id: string },
   ) {
-    return this.chatsService.sendMessage(id, dto.text, user.id)
+    return this.chatsService.sendMessage(id, dto.text, user.id, dto.replyTo)
+  }
+
+  @Patch(':id/messages/:messageId')
+  editMessage(
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @Body() dto: EditMessageDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.chatsService.editMessage(id, messageId, dto.text, user.id)
+  }
+
+  @Delete(':id/messages/:messageId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteMessage(
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.chatsService.deleteMessage(id, messageId, user.id)
   }
 
   @Post(':id/sync-history')

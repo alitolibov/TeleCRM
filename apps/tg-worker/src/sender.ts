@@ -15,47 +15,53 @@ export function setupSender(client: any) {
   const worker = new Worker<TgOutgoingJob>(
     REDIS_QUEUES.tgOutgoing,
     async (job) => {
-      const { chatId, content } = job.data
+      const { chatId, content, replyToMessageId } = job.data
 
-      if (content.type === 'text') {
-        await client.invoke({
+      /** Build sendMessage payload and add reply_to only when present —
+       *  TDLib rejects an explicit `null`/`undefined` reply_to in some builds. */
+      function buildPayload(input: any) {
+        const payload: any = {
           _: 'sendMessage',
           chat_id: chatId,
-          input_message_content: {
-            _: 'inputMessageText',
-            text: { _: 'formattedText', text: content.text, entities: [] },
-          },
-        })
+          input_message_content: input,
+        }
+        if (replyToMessageId) {
+          payload.reply_to = {
+            _: 'inputMessageReplyToMessage',
+            chat_id: chatId,                  // same-chat reply (kept for older builds)
+            message_id: replyToMessageId,
+          }
+        }
+        return payload
+      }
+
+      if (content.type === 'text') {
+        await client.invoke(buildPayload({
+          _: 'inputMessageText',
+          text: { _: 'formattedText', text: content.text, entities: [] },
+        }))
         return
       }
 
       if (content.type === 'photo') {
-        await client.invoke({
-          _: 'sendMessage',
-          chat_id: chatId,
-          input_message_content: {
-            _: 'inputMessagePhoto',
-            photo: { _: 'inputFileLocal', path: content.filePath },
-            caption: content.caption
-              ? { _: 'formattedText', text: content.caption, entities: [] }
-              : undefined,
-          },
-        })
+        await client.invoke(buildPayload({
+          _: 'inputMessagePhoto',
+          photo: { _: 'inputFileLocal', path: content.filePath },
+          caption: content.caption
+            ? { _: 'formattedText', text: content.caption, entities: [] }
+            : undefined,
+        }))
         return
       }
 
       if (content.type === 'document') {
-        await client.invoke({
-          _: 'sendMessage',
-          chat_id: chatId,
-          input_message_content: {
-            _: 'inputMessageDocument',
-            document: { _: 'inputFileLocal', path: content.filePath },
-            caption: content.caption
-              ? { _: 'formattedText', text: content.caption, entities: [] }
-              : undefined,
-          },
-        })
+        await client.invoke(buildPayload({
+          _: 'inputMessageDocument',
+          document: { _: 'inputFileLocal', path: content.filePath },
+          caption: content.caption
+            ? { _: 'formattedText', text: content.caption, entities: [] }
+            : undefined,
+        }))
         return
       }
 
