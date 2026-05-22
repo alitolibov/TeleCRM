@@ -26,8 +26,12 @@ export class FilesService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Triggers tg-worker to download a Telegram file. Returns the local path or null. */
-  async resolveFile(fileId: number, remoteFileId?: string): Promise<string | null> {
-    const job = await this.queue.add('download', { fileId, remoteFileId }, {
+  async resolveFile(
+    fileId: number,
+    remoteFileId?: string,
+    contentType?: TgFileRequestJob['contentType'],
+  ): Promise<string | null> {
+    const job = await this.queue.add('download', { fileId, remoteFileId, contentType }, {
       removeOnComplete: 100,
       removeOnFail: 50,
     })

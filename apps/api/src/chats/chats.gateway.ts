@@ -60,6 +60,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Broadcast — every connected manager should see new messages so chat list
   // stays in sync, not only when they've opened a specific chat.
   emitNewMessage(_chatId: string, payload: unknown) {
+    const clients = this.server?.sockets?.sockets?.size ?? 0
+    console.log(`[ws] emit message:new → ${clients} client(s)`)
     this.server.emit('message:new', payload)
   }
 
@@ -68,6 +70,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   emitNewChat(chat: unknown) {
+    const clients = this.server?.sockets?.sockets?.size ?? 0
+    console.log(`[ws] emit chat:new → ${clients} client(s)`)
     this.server.emit('chat:new', chat)
   }
 

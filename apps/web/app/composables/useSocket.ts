@@ -5,12 +5,17 @@ let socket: Socket | null = null
 export function useSocket() {
   const config = useRuntimeConfig()
 
+  /**
+   * Idempotent connect — must NEVER recreate an existing socket, otherwise
+   * listeners attached by earlier callers (e.g. page) would silently lose
+   * their socket when a later caller (e.g. layout) re-connects.
+   *
+   * If the socket exists at all (connecting, connected, or briefly down for
+   * an auto-reconnect), we return it untouched. Only when there is no socket
+   * at all do we create a fresh one.
+   */
   function connect(token: string) {
-    if (socket?.connected) return socket
-    if (socket) {
-      socket.disconnect()
-      socket = null
-    }
+    if (socket) return socket
     socket = io(config.public.wsUrl as string, {
       auth: { token },
       transports: ['websocket', 'polling'],

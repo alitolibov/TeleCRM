@@ -47,6 +47,13 @@ function onFileChange(e: Event) {
   if (file) emit('file', file)
 }
 
+/** Cancelling edit must also clear the input — otherwise the previously-loaded
+ *  message text stays in the composer and the user accidentally sends it. */
+function onCancelEdit() {
+  text.value = ''
+  emit('cancelEdit')
+}
+
 // Allow parent to focus the textarea after entering edit mode.
 defineExpose({
   focus() {
@@ -71,7 +78,7 @@ defineExpose({
             : (editingMessage.content?.caption || 'медиа') }}
         </div>
       </div>
-      <button class="edit-indicator-close" @click="$emit('cancelEdit')">
+      <button class="edit-indicator-close" @click="onCancelEdit">
         <i class="pi pi-times" />
       </button>
     </div>

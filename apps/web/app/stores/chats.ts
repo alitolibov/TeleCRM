@@ -69,8 +69,9 @@ export const useChatsStore = defineStore('chats', () => {
     const isActive = activeChat.value?.id === data.id
     const overrides = isActive && data.unreadCount !== undefined ? { unreadCount: 0 } : {}
     const merged = { ...data, ...overrides }
-    const idx = chats.value.findIndex(c => c.id === data.id)
-    if (idx !== -1) chats.value[idx] = { ...chats.value[idx], ...merged } as Chat
+    // Use map() to replace the whole array — index mutation (chats.value[idx] = ...)
+    // sometimes doesn't fire Pinia reactivity for downstream computed/watch.
+    chats.value = chats.value.map(c => c.id === data.id ? ({ ...c, ...merged } as Chat) : c)
     if (isActive) activeChat.value = { ...activeChat.value, ...merged } as Chat
   }
 

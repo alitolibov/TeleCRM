@@ -8,6 +8,13 @@
       "when": 1779427203577,
       "tag": "0000_clear_spiral",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779431496344,
+      "tag": "0001_shiny_puff_adder",
+      "breakpoints": true
     }
   ]
 }

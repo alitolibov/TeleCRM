@@ -9,11 +9,24 @@ function buildRedisConnection() {
   return { host: url.hostname, port: Number(url.port) || 6379 }
 }
 
+/** Map our shared content-type strings to TDLib's FileType discriminated union. */
+function tdlibFileType(contentType: TgFileRequestJob['contentType']): { _: string } {
+  switch (contentType) {
+    case 'photo':     return { _: 'fileTypePhoto' }
+    case 'video':     return { _: 'fileTypeVideo' }
+    case 'videoNote': return { _: 'fileTypeVideoNote' }
+    case 'voice':     return { _: 'fileTypeVoiceNote' }
+    case 'document':  return { _: 'fileTypeDocument' }
+    case 'sticker':   return { _: 'fileTypeSticker' }
+    default:          return { _: 'fileTypeUnknown' }
+  }
+}
+
 export function setupFileWorker(client: any) {
   const worker = new Worker<TgFileRequestJob, TgFileResponse>(
     REDIS_QUEUES.tgFileRequest,
     async (job: Job<TgFileRequestJob, TgFileResponse>) => {
-      const { fileId, remoteFileId } = job.data
+      const { fileId, remoteFileId, contentType } = job.data
       try {
         // Local file IDs are session-scoped and get reused across worker restarts.
         // If we have a stable remote ID, resolve it to the current local ID first.
@@ -23,7 +36,9 @@ export function setupFileWorker(client: any) {
             const remoteFile = await client.invoke({
               _: 'getRemoteFile',
               remote_file_id: remoteFileId,
-              file_type: { _: 'fileTypeNone' },
+              // TDLib aborts (SIGABRT) on fileTypeNone for some remote IDs —
+              // pass the actual type derived from the message's content type.
+              file_type: tdlibFileType(contentType),
             })
             if (remoteFile?.id) actualFileId = remoteFile.id
           } catch (e) {

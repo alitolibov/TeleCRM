@@ -54,9 +54,9 @@ export class ChatsController {
   close(
     @Param('id') id: string,
     @Body() dto: CloseChatDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
-    return this.chatsService.close(id, user.id, dto)
+    return this.chatsService.close(id, user.id, user.role, dto)
   }
 
   @Get(':id/info')
@@ -65,8 +65,8 @@ export class ChatsController {
   }
 
   @Patch(':id/reopen')
-  reopen(@Param('id') id: string, @CurrentUser() user: { id: string }) {
-    return this.chatsService.reopen(id, user.id)
+  reopen(@Param('id') id: string, @CurrentUser() user: { id: string; role: 'admin' | 'manager' }) {
+    return this.chatsService.reopen(id, user.id, user.role)
   }
 
   @Patch(':id/read')
@@ -79,9 +79,9 @@ export class ChatsController {
   sendMessage(
     @Param('id') id: string,
     @Body() dto: SendMessageDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
-    return this.chatsService.sendMessage(id, dto.text, user.id, dto.replyTo)
+    return this.chatsService.sendMessage(id, dto.text, user.id, user.role, dto.replyTo)
   }
 
   @Patch(':id/messages/:messageId')
@@ -89,9 +89,9 @@ export class ChatsController {
     @Param('id') id: string,
     @Param('messageId') messageId: string,
     @Body() dto: EditMessageDto,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
-    return this.chatsService.editMessage(id, messageId, dto.text, user.id)
+    return this.chatsService.editMessage(id, messageId, dto.text, user.id, user.role)
   }
 
   @Delete(':id/messages/:messageId')
@@ -99,9 +99,9 @@ export class ChatsController {
   deleteMessage(
     @Param('id') id: string,
     @Param('messageId') messageId: string,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
-    return this.chatsService.deleteMessage(id, messageId, user.id)
+    return this.chatsService.deleteMessage(id, messageId, user.id, user.role)
   }
 
   @Post(':id/sync-history')
@@ -132,7 +132,7 @@ export class ChatsController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body('caption') caption: string | undefined,
-    @CurrentUser() user: { id: string },
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
     if (!file) throw new BadRequestException('No file uploaded')
     return this.chatsService.sendMedia(
@@ -142,6 +142,7 @@ export class ChatsController {
       file.mimetype,
       file.size,
       user.id,
+      user.role,
       caption,
     )
   }

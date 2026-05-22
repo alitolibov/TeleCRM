@@ -40,7 +40,7 @@ export function useChats() {
   const { chats, activeChat, messages } = storeToRefs(store)
   const { on, off, emit } = useSocket()
 
-  const { isLoading: loading } = useQuery({
+  const { isLoading: loading, refetch: refetchChats } = useQuery({
     queryKey: ['chats'],
     queryFn: async () => {
       const data = await api<Chat[]>('/chats')
@@ -132,10 +132,34 @@ export function useChats() {
     return sendMutation.mutateAsync({ chatId: store.activeChat.id, text, replyTo })
   }
 
+  /**
+   * Defense-in-depth realtime: optimistic WS updates + multiple safety nets.
+   * Layers:
+   *  1. WS events           — immediate UI feedback for the happy path
+   *  2. Reconnect refetch   — catch up after a network blip
+   *  3. Visibility refetch  — catch up when user returns to the tab
+   *  4. Background polling  — periodic full refresh (60 s) as last resort
+   * Each layer is independent — if any one fails, the others compensate.
+   */
   function setupRealtime() {
     let readSyncTimer: ReturnType<typeof setTimeout> | null = null
+    let hasConnectedOnce = false
+    let pollTimer: ReturnType<typeof setInterval> | null = null
+
+    async function fullRefetch(reason: string) {
+      console.log(`[realtime] full refetch — ${reason}`)
+      try { await refetchChats() } catch (e) { console.error(e) }
+      const activeId = store.activeChat?.id
+      if (activeId) {
+        try {
+          const msgs = await api<ChatMessage[]>(`/chats/${activeId}/messages`)
+          store.prependMessages(msgs)
+        } catch (e) { console.error(e) }
+      }
+    }
 
     const onNewMessage = (msg: ChatMessage & { client: ChatClient }) => {
+      console.log('[ws] ← message:new', { chatId: msg.chatId, type: msg.content?.type })
       store.handleNewMessage(msg)
 
       // If a client message arrived for the chat we're currently viewing,
@@ -152,24 +176,59 @@ export function useChats() {
       }
     }
 
-    const onChatUpdated = (data: any) => store.handleChatUpdated(data)
-    const onNewChat = (chat: Chat) => store.handleNewChat(chat)
+    const onChatUpdated = (data: any) => {
+      console.log('[ws] ← chat:updated', { id: data.id, fields: Object.keys(data) })
+      // Fallback: chat may not be in our local list (e.g. we missed `chat:new`
+      // while WS was reconnecting). Refetch the whole list so we don't lose it.
+      const known = store.chats.some(c => c.id === data.id)
+      if (!known) {
+        console.warn('[ws] chat:updated for unknown chat → refetching list', data.id)
+        refetchChats().catch(() => {})
+        return
+      }
+      store.handleChatUpdated(data)
+    }
+    const onNewChat = (chat: Chat) => {
+      console.log('[ws] ← chat:new', { id: chat.id })
+      store.handleNewChat(chat)
+    }
     const onMessageEdited = (payload: any) => store.handleMessageEdited(payload)
     const onMessagesDeleted = (payload: any) => store.handleMessagesDeleted(payload)
 
+    // Layer 2 — reconnect catch-up
+    const onConnect = () => {
+      if (!hasConnectedOnce) { hasConnectedOnce = true; return }
+      fullRefetch('socket reconnected')
+    }
+
+    // Layer 3 — tab visibility catch-up
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') fullRefetch('tab focused')
+    }
+
+    // Layer 4 — periodic background poll
+    pollTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') fullRefetch('60s poll')
+    }, 60_000)
+
+    on('connect', onConnect)
     on('message:new', onNewMessage)
     on('chat:updated', onChatUpdated)
     on('chat:new', onNewChat)
     on('message:edited', onMessageEdited)
     on('message:deleted', onMessagesDeleted)
+    document.addEventListener('visibilitychange', onVisibility)
 
     onUnmounted(() => {
       if (readSyncTimer) clearTimeout(readSyncTimer)
+      if (pollTimer) clearInterval(pollTimer)
+      off('connect', onConnect)
       off('message:new', onNewMessage)
       off('chat:updated', onChatUpdated)
       off('chat:new', onNewChat)
       off('message:edited', onMessageEdited)
       off('message:deleted', onMessagesDeleted)
+      document.removeEventListener('visibilitychange', onVisibility)
     })
   }
 

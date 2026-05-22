@@ -10,6 +10,8 @@ export const users = pgTable('users', {
   role: userRole('role').notNull(),
   status: userStatus('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  // Soft delete — preserves history (chats.assigned_to, action_logs.actor_id, ...).
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

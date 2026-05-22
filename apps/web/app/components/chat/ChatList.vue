@@ -12,6 +12,11 @@ defineEmits<{
   (e: 'select', id: string): void
 }>()
 
+// Admin sees a manager-tag on each row so they know who's handling what.
+// Regular managers don't need this — they only see their own chats anyway.
+const { user } = useAuth()
+const isAdmin = computed(() => user.value?.role === 'admin')
+
 const search = ref('')
 const activeFilter = ref('all')
 
@@ -144,6 +149,25 @@ function statusLabel(s: string) {
               />
               <span v-if="chat.unreadCount > 0" class="unread-badge">{{ chat.unreadCount }}</span>
             </div>
+          </div>
+
+          <!-- Admin-only: tag showing chat ownership at a glance.
+               • assigned     → manager's first name
+               • new, queued  → neutral "в очереди" badge
+               • anomaly      → orange "без владельца" badge -->
+          <div v-if="isAdmin" class="chat-row-tag-line">
+            <span v-if="chat.assignedUser" class="chat-row-tag">
+              <i class="pi pi-user text-[9px]" />
+              {{ chat.assignedUser.firstName }}
+            </span>
+            <span v-else-if="chat.status === 'new'" class="chat-row-tag chat-row-tag-queued">
+              <i class="pi pi-inbox text-[9px]" />
+              в очереди
+            </span>
+            <span v-else class="chat-row-tag chat-row-tag-warning">
+              <i class="pi pi-exclamation-triangle text-[9px]" />
+              без владельца
+            </span>
           </div>
         </div>
       </button>

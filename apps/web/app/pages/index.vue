@@ -17,50 +17,53 @@
       />
 
       <!-- Messages -->
-      <div
-        class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-0.5"
-        ref="messagesEl"
-        @scroll="onScroll"
-      >
-        <div class="flex items-center justify-center py-2">
-          <div v-if="loadingOlder" class="text-xs text-surface-400 flex items-center gap-2">
-            <i class="pi pi-spin pi-spinner text-xs" /> Загружаю историю...
+      <div class="messages-wrap">
+        <div
+          class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-0.5"
+          ref="messagesEl"
+          @scroll="onScroll"
+        >
+          <div class="flex items-center justify-center py-2">
+            <div v-if="loadingOlder" class="text-xs text-surface-400 flex items-center gap-2">
+              <i class="pi pi-spin pi-spinner text-xs" /> Загружаю историю...
+            </div>
+            <div v-else-if="historyExhausted && messages.length > 0" class="text-[11px] text-surface-300">
+              — начало диалога —
+            </div>
           </div>
-          <div v-else-if="historyExhausted && messages.length > 0" class="text-[11px] text-surface-300">
-            — начало диалога —
+
+          <div v-if="messages.length === 0 && !loadingOlder"
+            class="flex-1 flex flex-col items-center justify-center text-sm text-surface-400 gap-2">
+            <i class="pi pi-comment text-3xl opacity-30" />
+            Нет сообщений
           </div>
+
+          <template v-for="(msg, idx) in messages" :key="msg.id">
+            <div v-if="needsDaySeparator(idx)" class="day-sep">
+              <span>{{ formatDay(msg.createdAt) }}</span>
+            </div>
+
+            <div
+              class="message-row group"
+              :class="[
+                msg.senderType === 'manager' ? 'self-end' : 'self-start',
+                startsGroup(idx) ? 'mt-2.5' : 'mt-0.5',
+              ]"
+              :data-msg-id="msg.id"
+            >
+              <MessageBubble
+                :msg="msg"
+                :shape="bubbleShape(idx)"
+                :is-media-only="isMediaOnly(msg)"
+                :reply-target="findReplyTarget(msg)"
+                @contextmenu="onContextMenu"
+                @jump-to="jumpToMessage"
+              />
+            </div>
+          </template>
         </div>
 
-        <div v-if="messages.length === 0 && !loadingOlder"
-          class="flex-1 flex flex-col items-center justify-center text-sm text-surface-400 gap-2">
-          <i class="pi pi-comment text-3xl opacity-30" />
-          Нет сообщений
-        </div>
-
-        <template v-for="(msg, idx) in messages" :key="msg.id">
-          <div v-if="needsDaySeparator(idx)" class="day-sep">
-            <span>{{ formatDay(msg.createdAt) }}</span>
-          </div>
-
-          <div
-            class="message-row group"
-            :class="[
-              msg.senderType === 'manager' ? 'self-end' : 'self-start',
-              startsGroup(idx) ? 'mt-2.5' : 'mt-0.5',
-            ]"
-            :data-msg-id="msg.id"
-          >
-            <MessageBubble
-              :msg="msg"
-              :shape="bubbleShape(idx)"
-              :is-media-only="isMediaOnly(msg)"
-              :reply-target="findReplyTarget(msg)"
-              @contextmenu="onContextMenu"
-              @jump-to="jumpToMessage"
-            />
-          </div>
-        </template>
-
+        <!-- Floating "scroll-to-bottom" button — absolute over the messages list -->
         <Transition name="fade">
           <button
             v-if="showScrollDown"
@@ -125,6 +128,14 @@
       :saving="closeChatSaving"
       @confirm="onCloseConfirm"
     />
+
+    <AdminTakeoverDialog
+      :open="guardDialog.open"
+      :owner-name="guardDialog.ownerName"
+      :action-label="guardDialog.actionLabel"
+      @update:open="(v: boolean) => !v && cancelTakeover()"
+      @confirm="confirmTakeover"
+    />
   </div>
 </template>
 
@@ -138,6 +149,7 @@ import MessageContextMenu from '~/components/chat/MessageContextMenu.vue'
 import TakeChatDialog from '~/components/chat/dialogs/TakeChatDialog.vue'
 import DeleteMessageDialog from '~/components/chat/dialogs/DeleteMessageDialog.vue'
 import CloseChatDialog, { type ClosePayload } from '~/components/chat/dialogs/CloseChatDialog.vue'
+import AdminTakeoverDialog from '~/components/chat/dialogs/AdminTakeoverDialog.vue'
 import { formatDay } from '~/utils/format'
 
 definePageMeta({ middleware: 'auth' })
@@ -161,8 +173,23 @@ const {
   canEdit, canDelete, canReply,
   startEditing, cancelEditing,
   startReplying, cancelReplying,
-  askDelete, confirmDelete, onContextMenu,
+  askDelete: askDeleteRaw, confirmDelete, onContextMenu,
+  closeActionMenu,
 } = useMessageActions({ editMessage, deleteMessage })
+
+// === Admin takeover guard ===
+// Wraps actions that admin might perform on another manager's chat.
+// `onTakeover` runs as soon as admin confirms the modal — calls /chats/:id/assign
+// so the chat ownership flips immediately, before the underlying action completes.
+const { guardDialog, withGuard, confirm: confirmTakeover, cancel: cancelTakeover } = useAdminTakeoverGuard({
+  onTakeover: (chatId) => assignChat(chatId),
+})
+
+function askDelete(msg: typeof actionMenuMsg.value) {
+  if (!msg) return
+  closeActionMenu()  // Close the right-click menu first — modal must not stack on top of it
+  withGuard(activeChat.value, 'удалить сообщение', () => askDeleteRaw(msg))
+}
 
 // === Scroll state via composable ===
 const {
@@ -181,13 +208,16 @@ const { connect } = useSocket()
 // Bridge: composable owns editText, but composer is v-model'd on a separate ref
 function startEditingMessage(msg: typeof actionMenuMsg.value) {
   if (!msg) return
-  startEditing(msg)
-  composerText.value = msg.content?.type === 'text'
-    ? (msg.content.text ?? '')
-    : (msg.content?.caption ?? '')
-  nextTick(() => {
-    const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
-    ta?.focus()
+  closeActionMenu()  // Close the right-click menu first — modal must not stack on top of it
+  withGuard(activeChat.value, 'изменить сообщение', () => {
+    startEditing(msg)
+    composerText.value = msg.content?.type === 'text'
+      ? (msg.content.text ?? '')
+      : (msg.content?.caption ?? '')
+    nextTick(() => {
+      const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
+      ta?.focus()
+    })
   })
 }
 
@@ -195,7 +225,7 @@ async function handleSend() {
   const body = composerText.value.trim()
   if (!body || !activeChat.value) return
 
-  // Edit mode
+  // Edit mode — takeover was already confirmed at startEditingMessage
   if (editingMessage.value) {
     await editMessage(editingMessage.value.id, body)
     cancelEditing()
@@ -205,6 +235,7 @@ async function handleSend() {
 
   const replyTargetId = replyingTo.value?.id
 
+  // New chat flow — needs to be claimed first
   if (activeChat.value.status === 'new') {
     askTakeChat(async () => {
       try { await assignChat(activeChat.value!.id) } catch { return }
@@ -213,7 +244,8 @@ async function handleSend() {
     return
   }
 
-  await doSend(body, replyTargetId)
+  // Admin sending to another manager's chat — confirm takeover first
+  withGuard(activeChat.value, 'отправить сообщение', () => doSend(body, replyTargetId))
 }
 
 async function doSend(body: string, replyTo?: string) {
@@ -233,7 +265,7 @@ async function onFileSelected(file: File) {
     })
     return
   }
-  await doUpload(file)
+  withGuard(activeChat.value, 'отправить файл', () => doUpload(file))
 }
 
 async function doUpload(file: File) {
@@ -271,13 +303,15 @@ async function handleAssign() {
 
 function handleClose() {
   if (!activeChat.value) return
-  closeChatOpen.value = true
+  withGuard(activeChat.value, 'закрыть чат', () => { closeChatOpen.value = true })
 }
 
-async function handleReopen() {
+function handleReopen() {
   if (!activeChat.value) return
-  await reopenChat(activeChat.value.id)
-  await refreshClientInfo(activeChat.value.id)
+  withGuard(activeChat.value, 'переоткрыть чат', async () => {
+    await reopenChat(activeChat.value!.id)
+    await refreshClientInfo(activeChat.value!.id)
+  })
 }
 
 async function onCloseConfirm(payload: ClosePayload) {
@@ -790,23 +824,34 @@ onMounted(async () => {
 .unsupported i { font-size: 13px; }
 
 /* ===== Scroll-down FAB ===== */
+/* Container that lets us float the FAB over the scrollable messages list. */
+.messages-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;            /* allows the inner scroll area to actually scroll */
+}
+.messages-wrap > div:first-child { flex: 1; min-height: 0; }
+
 .scroll-down-btn {
-  position: sticky;
-  bottom: 8px;
-  align-self: flex-end;
-  margin-right: 4px;
-  width: 42px;
-  height: 42px;
-  border-radius: 9999px;
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 50%;
   background: var(--p-surface-0);
   color: var(--p-surface-700);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
   transition: transform 0.15s, background-color 0.15s;
   cursor: pointer;
   z-index: 5;
+  border: 1px solid var(--divider);
 }
 .scroll-down-btn:hover { transform: translateY(-1px); background: var(--p-surface-100); }
 .scroll-down-badge {

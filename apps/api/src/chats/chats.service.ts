@@ -179,6 +179,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     // 5. Realtime push — emit chat:new FIRST so the chat exists in the
     // frontend's list before message:new tries to update it.
+    console.log(`[api] processIncomingEvent: emitting for chat ${chat.id} (isNew=${isNewChat}, gateway=${!!this.gateway})`)
     if (isNewChat) {
       this.gateway?.emitNewChat({
         ...chat, client,
@@ -311,11 +312,18 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async assign(chatId: string, userId: string) {
-    const [chat] = await this.db
+    await this.db
       .update(schema.chats)
       .set({ assignedTo: userId, status: 'active', updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
-      .returning()
+
+    // Return with assignedUser populated so the frontend tag updates immediately.
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: {
+        assignedUser: { columns: { id: true, firstName: true, username: true } },
+      },
+    })
     return chat
   }
 
@@ -334,12 +342,59 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }).catch(() => {})
   }
 
-  async reopen(chatId: string, userId: string) {
+  /**
+   * Ensures admin actions always attribute a chat to someone:
+   *  - if chat has another owner → transfer to admin (logged as chat_transferred)
+   *  - if chat has no owner       → claim for admin (logged as chat_assigned)
+   *  - otherwise (already mine or actor isn't admin) → noop
+   *
+   * Returns true if ownership changed (caller may want to include assigned_to
+   * in the WS payload).
+   */
+  private async maybeAdminTakeover(
+    chatId: string,
+    currentAssignedTo: string | null,
+    actorId: string,
+    actorRole: 'admin' | 'manager',
+  ): Promise<boolean> {
+    if (actorRole !== 'admin') return false
+    if (currentAssignedTo === actorId) return false
+
+    const isClaim = !currentAssignedTo
+    await this.db.insert(schema.actionLogs).values({
+      action: isClaim ? 'chat_assigned' : 'chat_transferred',
+      actorId,
+      chatId,
+      metadata: isClaim
+        ? { to: actorId, reason: 'admin_claim' }
+        : { from: currentAssignedTo, to: actorId, reason: 'admin_action' },
+    })
+    await this.db.update(schema.chats)
+      .set({ assignedTo: actorId, updatedAt: new Date() })
+      .where(eq(schema.chats.id, chatId))
+
+    // Include the new owner's display info so the chat-list tag updates
+    // immediately in the UI without needing a refetch.
+    const actor = await this.db.query.users.findFirst({
+      where: eq(schema.users.id, actorId),
+      columns: { id: true, firstName: true, username: true },
+    })
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      assignedTo: actorId,
+      assignedUser: actor ?? null,
+    })
+    return true
+  }
+
+  async reopen(chatId: string, userId: string, userRole: 'admin' | 'manager') {
     const chat = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
     })
     if (!chat) throw new Error('Chat not found')
     if (chat.status !== 'closed') return chat // no-op
+
+    await this.maybeAdminTakeover(chatId, chat.assignedTo, userId, userRole)
 
     const [updated] = await this.db
       .update(schema.chats)
@@ -353,7 +408,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return updated
   }
 
-  async close(chatId: string, userId: string, result?: {
+  async close(chatId: string, userId: string, userRole: 'admin' | 'manager', result?: {
     status: 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
     flightFrom?: string
     flightTo?: string
@@ -391,8 +446,9 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     const prev = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
-      columns: { status: true },
+      columns: { status: true, assignedTo: true },
     })
+    await this.maybeAdminTakeover(chatId, prev?.assignedTo ?? null, userId, userRole)
     const [chat] = await this.db
       .update(schema.chats)
       .set({ status: 'closed', closedAt: new Date(), unreadCount: 0, updatedAt: new Date() })
@@ -518,7 +574,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async sendMessage(chatId: string, text: string, senderId: string, replyToMessageId?: string) {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    senderId: string,
+    senderRole: 'admin' | 'manager',
+    replyToMessageId?: string,
+  ) {
     const chat = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
       with: { client: true },
@@ -560,20 +622,46 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     // If the chat was closed and the manager replied, reopen it as 'active'
     // immediately (don't wait for the TDLib echo to update status).
     const statusUpdate = chat.status === 'closed' ? { status: 'active' as const, closedAt: null } : {}
+    // Ownership rules:
+    //  - unassigned → claim for sender
+    //  - admin replied to someone else's chat → admin takes it over
+    //    (admin intervening is implicit reassignment — they wouldn't be writing
+    //    in another manager's chat by accident)
+    const adminTakingOver = senderRole === 'admin' && chat.assignedTo && chat.assignedTo !== senderId
+    const ownerUpdate = (!chat.assignedTo || adminTakingOver) ? { assignedTo: senderId } : {}
+    if (adminTakingOver) {
+      await this.db.insert(schema.actionLogs).values({
+        action: 'chat_transferred',
+        actorId: senderId,
+        chatId,
+        metadata: { from: chat.assignedTo, to: senderId, reason: 'admin_reply' },
+      })
+    }
     await this.db
       .update(schema.chats)
-      .set({ ...statusUpdate, lastMessageAt: message.createdAt, updatedAt: new Date() })
+      .set({ ...statusUpdate, ...ownerUpdate, lastMessageAt: message.createdAt, updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
 
     // Manager engaged → mark everything before this as read (clears unread badge
     // AND sends viewMessages to Telegram so the client sees double-check).
     await this.markRead(chatId)
 
+    // If ownership changed, fetch the new owner's display info so the chat-list
+    // badge updates without a refetch.
+    const newOwnerInfo = ownerUpdate.assignedTo
+      ? await this.db.query.users.findFirst({
+          where: eq(schema.users.id, senderId),
+          columns: { id: true, firstName: true, username: true },
+        })
+      : null
+
     // Broadcast so all open CRM clients (other managers, other tabs) see the message
     this.gateway?.emitNewMessage(chatId, { ...message, client: chat.client })
     this.gateway?.emitChatUpdated({
       id: chatId,
       ...(chat.status === 'closed' ? { status: 'active' } : {}),
+      ...(ownerUpdate as { assignedTo?: string }),
+      ...(newOwnerInfo ? { assignedUser: newOwnerInfo } : {}),
       unreadCount: 0,
       lastMessageAt: message.createdAt,
       lastMessage: message,
@@ -666,7 +754,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     fileName: string,
     mimeType: string,
     _size: number,
-    _senderId: string,
+    senderId: string,
+    senderRole: 'admin' | 'manager',
     caption?: string,
   ) {
     const chat = await this.db.query.chats.findFirst({
@@ -690,17 +779,38 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     // echo (it brings a real fileId that the /files endpoint can serve).
     // Reopen closed chats so the manager's send is reflected as "active" right away.
     const statusUpdate = chat.status === 'closed' ? { status: 'active' as const, closedAt: null } : {}
+    // Same ownership rules as sendMessage: unassigned → claim; admin replying
+    // to someone else's chat → admin takes over.
+    const adminTakingOver = senderRole === 'admin' && chat.assignedTo && chat.assignedTo !== senderId
+    const ownerUpdate = (!chat.assignedTo || adminTakingOver) ? { assignedTo: senderId } : {}
+    if (adminTakingOver) {
+      await this.db.insert(schema.actionLogs).values({
+        action: 'chat_transferred',
+        actorId: senderId,
+        chatId,
+        metadata: { from: chat.assignedTo, to: senderId, reason: 'admin_reply' },
+      })
+    }
     await this.db
       .update(schema.chats)
-      .set({ ...statusUpdate, lastMessageAt: new Date(), updatedAt: new Date() })
+      .set({ ...statusUpdate, ...ownerUpdate, lastMessageAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
 
     // Manager engaged → clear unread + Telegram read receipts.
     await this.markRead(chatId)
 
+    const newOwnerInfo = ownerUpdate.assignedTo
+      ? await this.db.query.users.findFirst({
+          where: eq(schema.users.id, senderId),
+          columns: { id: true, firstName: true, username: true },
+        })
+      : null
+
     this.gateway?.emitChatUpdated({
       id: chatId,
       ...(chat.status === 'closed' ? { status: 'active' } : {}),
+      ...(ownerUpdate as { assignedTo?: string }),
+      ...(newOwnerInfo ? { assignedUser: newOwnerInfo } : {}),
       unreadCount: 0,
       lastMessageAt: new Date(),
     })
@@ -710,7 +820,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
   // === Edit / Delete ===
 
-  async editMessage(chatId: string, messageId: string, text: string, userId: string) {
+  async editMessage(
+    chatId: string,
+    messageId: string,
+    text: string,
+    userId: string,
+    userRole: 'admin' | 'manager',
+  ) {
     const message = await this.db.query.messages.findFirst({
       where: (m, { eq, and }) => and(eq(m.id, messageId), eq(m.chatId, chatId)),
     })
@@ -725,7 +841,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       with: { client: true },
     })
     if (!chat) throw new Error('Chat not found')
-    void userId  // currently only checking sender type — any manager can edit our outgoing
+
+    await this.maybeAdminTakeover(chatId, chat.assignedTo, userId, userRole)
 
     // Text messages: replace `text`. Media: replace `caption`.
     const oldContent = message.content as any
@@ -765,7 +882,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return updated
   }
 
-  async deleteMessage(chatId: string, messageId: string, userId: string) {
+  async deleteMessage(
+    chatId: string,
+    messageId: string,
+    userId: string,
+    userRole: 'admin' | 'manager',
+  ) {
     const message = await this.db.query.messages.findFirst({
       where: (m, { eq, and }) => and(eq(m.id, messageId), eq(m.chatId, chatId)),
     })
@@ -780,7 +902,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       with: { client: true },
     })
     if (!chat) throw new Error('Chat not found')
-    void userId  // any manager can delete our outgoing
+
+    await this.maybeAdminTakeover(chatId, chat.assignedTo, userId, userRole)
 
     // Wait for TDLib confirmation before soft-deleting locally.
     const job = await this.deleteQueue.add('delete', {

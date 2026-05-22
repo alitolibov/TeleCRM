@@ -117,3 +117,132 @@ body,
 .p-component * {
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
+
+/* ===== Avatar circles =====
+   Used everywhere — chat list, chat header, client sidebar, employees.
+   Lives here (not scoped to a page) so it loads regardless of entry route. */
+.avatar-circle {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  font-weight: 700;
+  color: #fff;
+  width: 42px;
+  height: 42px;
+  font-size: 14px;
+}
+.avatar-circle.xs { width: 20px; height: 20px; font-size: 9px; }
+.avatar-circle.sm { width: 28px; height: 28px; font-size: 11px; }
+.avatar-circle.md { width: 42px; height: 42px; font-size: 14px; }
+.avatar-circle.lg { width: 84px; height: 84px; font-size: 30px; }
+.avatar-circle.orange { background: linear-gradient(135deg, #fb923c, #c2410c); }
+.avatar-circle.blue   { background: linear-gradient(135deg, #60a5fa, #1d4ed8); }
+.avatar-circle.green  { background: linear-gradient(135deg, #34d399, #047857); }
+.avatar-circle.purple { background: linear-gradient(135deg, #a78bfa, #6d28d9); }
+.avatar-circle.pink   { background: linear-gradient(135deg, #f472b6, #be185d); }
+.avatar-circle.teal   { background: linear-gradient(135deg, #2dd4bf, #0f766e); }
+
+/* ===== Shared filter pills =====
+   Used by chat list (index.vue) and employees page — kept here so they're
+   always available regardless of which route the user lands on first. */
+.filter-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: 0 -4px;
+  padding: 0 4px 2px;
+  scrollbar-width: none;
+}
+.filter-bar::-webkit-scrollbar { display: none; }
+.filter-pill {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-surface-500);
+  background: var(--p-surface-100);
+  transition: all 0.15s;
+  white-space: nowrap;
+  border: none;
+  cursor: pointer;
+}
+.filter-pill:hover { background: color-mix(in srgb, var(--p-surface-200) 80%, transparent); color: var(--p-surface-700); }
+.filter-pill-active {
+  background: var(--p-primary-color) !important;
+  color: var(--p-primary-contrast-color, #fff) !important;
+}
+.filter-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  background: color-mix(in srgb, var(--p-surface-900) 8%, transparent);
+  color: var(--p-surface-600);
+}
+.filter-count-active {
+  background: rgba(255, 255, 255, 0.28) !important;
+  color: #fff !important;
+}
+
+/* ===== Manager tag (admin-only) on chat list rows ===== */
+.chat-row-tag-line {
+  display: flex;
+  margin-top: 6px;
+}
+.chat-row-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--p-primary-color);
+  background: color-mix(in srgb, var(--p-primary-color) 10%, transparent);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-row-tag > i { opacity: 0.75; }
+/* `new` chats waiting to be picked up — neutral, expected state */
+.chat-row-tag-queued {
+  color: var(--p-surface-500);
+  background: var(--p-surface-100);
+}
+/* `active` / `closed` chats without an owner — data anomaly worth flagging */
+.chat-row-tag-warning {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+}
+
+/* ===== Shared `field-label` (form labels) =====
+   Used by close-chat dialog and employee dialog. */
+.field-label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-surface-600);
+  margin-bottom: 5px;
+}
+
+/* Counter the global `* { margin: 0 }` reset for PrimeVue's ToggleSwitch.
+   The component centers its handle vertically via `top: 50%` + a negative
+   margin-top equal to half the handle size. Our reset zeroes that margin
+   and the handle drops to the bottom of the track. Force translate-based
+   centering instead — works regardless of handle size tokens. */
+.p-toggleswitch .p-toggleswitch-handle {
+  top: 50%;
+  margin-top: 0;
+  transform: translateY(-50%);
+}

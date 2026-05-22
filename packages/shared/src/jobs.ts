@@ -26,6 +26,9 @@ export interface TgHistoryResponse {
 export interface TgFileRequestJob {
   fileId: number
   remoteFileId?: string
+  /** Content type from the message — lets the worker pass a proper FileType
+   *  to TDLib's getRemoteFile (passing fileTypeNone aborts TDLib for some files). */
+  contentType?: 'photo' | 'video' | 'voice' | 'videoNote' | 'document' | 'sticker'
 }
 
 export interface TgFileResponse {

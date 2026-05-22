@@ -13,16 +13,33 @@ export class FilesController {
   async getFile(
     @Param('fileId') fileIdStr: string,
     @Query('r') remoteFileId: string | undefined,
+    @Query('t') contentType: string | undefined,
     @Res() res: Response,
   ) {
     const fileId = Number(fileIdStr)
     if (!Number.isInteger(fileId)) throw new BadRequestException()
 
-    const path = await this.filesService.resolveFile(fileId, remoteFileId)
+    const path = await this.filesService.resolveFile(fileId, remoteFileId, contentType as any)
     if (!path || !fs.existsSync(path)) throw new NotFoundException('file not ready')
 
     // Cache aggressively — Telegram file content is immutable per file_id
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
-    return res.sendFile(path)
+
+    // Explicit Content-Type — TDLib stores files with extensions Express may not
+    // map (e.g. .oga for voice), causing audio/video elements to refuse playback.
+    const mime = mimeForContentType(contentType)
+    const options = mime ? { headers: { 'Content-Type': mime } } : {}
+    return res.sendFile(path, options)
+  }
+}
+
+function mimeForContentType(t: string | undefined): string | null {
+  switch (t) {
+    case 'photo':     return 'image/jpeg'
+    case 'video':     return 'video/mp4'
+    case 'videoNote': return 'video/mp4'
+    case 'voice':     return 'audio/ogg'
+    case 'sticker':   return 'image/webp'
+    default:          return null
   }
 }

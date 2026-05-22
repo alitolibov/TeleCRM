@@ -52,19 +52,44 @@
       </div>
 
       <!-- User card -->
-      <div class="mx-2 mb-2 px-3 py-2.5 bg-surface-100 rounded-xl border border-surface-200 flex items-center gap-2">
-        <Avatar :label="initials" shape="circle" size="normal"
-          class="font-bold text-white flex-shrink-0"
-          style="background: linear-gradient(135deg, var(--p-primary-color), #a78bfa)" />
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-semibold truncate text-surface-900">{{ user?.firstName }}</div>
-          <div class="text-[11.5px] text-surface-500 flex items-center gap-1">
-            <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-            {{ user?.role === 'admin' ? 'Администратор' : 'Менеджер' }}
+      <div class="mx-2 mb-2 p-3 bg-surface-100 rounded-xl border border-surface-200">
+        <!-- Top: avatar + name + logout -->
+        <div class="flex items-center gap-2">
+          <div class="relative flex-shrink-0">
+            <Avatar :label="initials" shape="circle" size="normal"
+              class="font-bold text-white"
+              style="background: linear-gradient(135deg, var(--p-primary-color), #a78bfa)" />
+            <span
+              class="status-dot-presence"
+              :class="isOnline ? 'status-dot-online' : 'status-dot-offline'"
+            />
           </div>
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-semibold truncate text-surface-900">{{ user?.firstName }}</div>
+            <div class="text-[11px] text-surface-500">
+              {{ user?.role === 'admin' ? 'Администратор' : 'Менеджер' }}
+            </div>
+          </div>
+          <Button icon="pi pi-sign-out" text rounded size="small" severity="secondary"
+            v-tooltip.top="'Выйти'" @click="logout" />
         </div>
-        <Button icon="pi pi-sign-out" text rounded size="small" severity="secondary"
-          v-tooltip.top="'Выйти'" @click="logout" />
+
+        <!-- Bottom: explicit status switch row -->
+        <div class="mt-2.5 pt-2.5 border-t border-surface-200 flex items-center justify-between gap-2">
+          <div class="flex flex-col min-w-0">
+            <span class="text-[12px] font-semibold" :class="isOnline ? 'text-green-600' : 'text-surface-500'">
+              {{ isOnline ? 'Доступен' : 'Не доступен' }}
+            </span>
+            <span class="text-[10.5px] text-surface-400 leading-tight">
+              {{ isOnline ? 'получаешь новые чаты' : 'новые чаты не придут' }}
+            </span>
+          </div>
+          <ToggleSwitch
+            :modelValue="isOnline"
+            @update:modelValue="toggleStatus"
+            v-tooltip.top="isOnline ? 'Перейти в Offline' : 'Перейти в Online'"
+          />
+        </div>
       </div>
     </aside>
 
@@ -77,14 +102,33 @@
 
 <script setup lang="ts">
 const route = useRoute()
-const { user, logout } = useAuth()
+const { user, logout, getToken } = useAuth()
+const { connect } = useSocket()
 const chatsStore = useChatsStore()
+const usersStore = useUsersStore()
+const { loadMe, setStatus, setupRealtime } = useUserStatus()
 const theme = inject<Ref<string>>('theme')!
 
 const totalUnread = computed(() => chatsStore.totalUnread)
 const initials = computed(() => (user.value?.firstName ?? '').slice(0, 2).toUpperCase())
 
+// Live status comes from usersStore.me — kept in sync with `user:status` WS events.
+const isOnline = computed(() => usersStore.me?.status === 'online')
+
+async function toggleStatus(next: boolean) {
+  try { await setStatus(next ? 'online' : 'offline') } catch (e) { console.error(e) }
+}
+
 function setTheme(t: string) { theme.value = t }
+
+onMounted(async () => {
+  // Defensive: ensure socket is connected before subscribing/heartbeating.
+  // The page-level connect() may or may not run first depending on route.
+  const token = getToken()
+  if (token) connect(token)
+  await loadMe()
+  setupRealtime()
+})
 </script>
 
 <style scoped>
@@ -99,4 +143,18 @@ function setTheme(t: string) { theme.value = t }
   content: '';
   @apply absolute -left-2.5 top-2 bottom-2 w-0.5 bg-primary-600 rounded-r;
 }
+
+/* Presence dot on the user avatar (bottom-right corner). */
+.status-dot-presence {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--p-surface-100);
+}
+.status-dot-online  { background: #22c55e; }
+.status-dot-offline { background: #94a3b8; }
+
 </style>

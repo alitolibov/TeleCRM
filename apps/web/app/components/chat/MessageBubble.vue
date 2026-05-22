@@ -18,8 +18,42 @@ defineEmits<{
 }>()
 
 const config = useRuntimeConfig()
-const fileUrl = (fileId: number, remoteFileId?: string) =>
-  buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId)
+const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string) =>
+  buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
+
+/** Telegram-style video: no native controls, custom play button overlay.
+ *  Clicking the wrapper toggles play/pause; play/pause events flip a class
+ *  on the wrapper so we can hide the overlay via CSS. */
+function toggleVideoPlayback(e: MouseEvent) {
+  const wrap = (e.currentTarget as HTMLElement).closest('.video-msg') as HTMLElement | null
+  const video = wrap?.querySelector('video') as HTMLVideoElement | null
+  if (!video) return
+  if (video.paused) video.play().catch(() => {})
+  else video.pause()
+}
+function onVideoStart(e: Event) {
+  ;((e.target as HTMLElement).closest('.video-msg') as HTMLElement | null)?.classList.add('playing')
+}
+function onVideoStop(e: Event) {
+  ;((e.target as HTMLElement).closest('.video-msg') as HTMLElement | null)?.classList.remove('playing')
+}
+/** Stream playback progress into a CSS variable so the seek bar fills smoothly
+ *  without per-message Vue state. */
+function onVideoTime(e: Event) {
+  const video = e.target as HTMLVideoElement
+  const wrap = video.closest('.video-msg') as HTMLElement | null
+  if (!wrap || !video.duration) return
+  const pct = (video.currentTime / video.duration) * 100
+  wrap.style.setProperty('--video-progress', `${pct}%`)
+}
+function onVideoSeek(e: MouseEvent) {
+  const bar = e.currentTarget as HTMLElement
+  const video = bar.closest('.video-msg')?.querySelector('video') as HTMLVideoElement | null
+  if (!video || !video.duration) return
+  const rect = bar.getBoundingClientRect()
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  video.currentTime = video.duration * ratio
+}
 
 // Telegram-like: round videos autoplay muted; clicking toggles sound + pause
 function toggleVideoNote(e: MouseEvent) {
@@ -86,9 +120,9 @@ function replyPreview(target: ChatMessage): string {
     </template>
 
     <template v-else-if="msg.content?.type === 'photo'">
-      <a :href="fileUrl(msg.content.fileId, msg.content.remoteFileId)" target="_blank" rel="noopener" class="media-wrap">
+      <a :href="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)" target="_blank" rel="noopener" class="media-wrap">
         <img
-          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
+          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
           :alt="msg.content.caption || 'photo'"
           loading="lazy"
           class="media-img"
@@ -104,7 +138,7 @@ function replyPreview(target: ChatMessage): string {
 
     <template v-else-if="msg.content?.type === 'voice'">
       <VoicePlayer
-        :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
+        :src="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
         :duration="msg.content.duration"
         :outgoing="isOutgoing"
         :time="formatMessageTime(msg.createdAt)"
@@ -112,14 +146,25 @@ function replyPreview(target: ChatMessage): string {
     </template>
 
     <template v-else-if="msg.content?.type === 'video'">
-      <div class="media-wrap">
+      <div class="video-msg" @click="toggleVideoPlayback">
         <video
-          controls
           preload="metadata"
-          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
-          class="media-img"
+          playsinline
+          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
+          class="video-msg-player"
+          @play="onVideoStart"
+          @pause="onVideoStop"
+          @ended="onVideoStop"
+          @timeupdate="onVideoTime"
         />
+        <button class="video-msg-play" type="button" @click.stop="toggleVideoPlayback">
+          <i class="pi pi-play" />
+        </button>
+        <span class="video-msg-duration">{{ formatVideoDuration(msg.content.duration) }}</span>
         <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}</span>
+        <div class="video-msg-bar" @click.stop="onVideoSeek" @mousedown.stop>
+          <div class="video-msg-bar-fill" />
+        </div>
       </div>
       <div v-if="msg.content.caption" class="bubble-text mt-1.5">
         {{ msg.content.caption }}<span class="bubble-meta-inline">
@@ -131,7 +176,7 @@ function replyPreview(target: ChatMessage): string {
     <template v-else-if="msg.content?.type === 'videoNote'">
       <div class="video-note" @click="toggleVideoNote">
         <video
-          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
+          :src="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
           playsinline
           loop
           muted
@@ -149,7 +194,7 @@ function replyPreview(target: ChatMessage): string {
 
     <template v-else-if="msg.content?.type === 'document'">
       <a
-        :href="fileUrl(msg.content.fileId, msg.content.remoteFileId)"
+        :href="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
         :download="msg.content.fileName"
         target="_blank"
         class="doc-attachment"
@@ -213,6 +258,83 @@ function replyPreview(target: ChatMessage): string {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 240px;
+}
+
+/* Telegram-style video player */
+.video-msg {
+  position: relative;
+  display: block;
+  cursor: pointer;
+  border-radius: 12px;
+  overflow: hidden;
+  line-height: 0;
+}
+.video-msg-player {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 360px;
+  height: auto;
+  background: #000;
+}
+.video-msg-play {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: opacity 0.15s, transform 0.12s, background 0.15s;
+  z-index: 2;
+}
+/* nudge play triangle visually to center */
+.video-msg-play > i { margin-left: 3px; }
+.video-msg-play:hover { background: rgba(0, 0, 0, 0.7); transform: translate(-50%, -50%) scale(1.05); }
+.video-msg.playing .video-msg-play { opacity: 0; pointer-events: none; }
+
+.video-msg-duration {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 2;
+}
+.video-msg.playing .video-msg-duration { opacity: 0; transition: opacity 0.2s; }
+
+/* Seek bar at the bottom — thin by default, taller on hover for easier clicking */
+.video-msg-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  z-index: 3;
+  transition: height 0.12s;
+}
+.video-msg-bar:hover { height: 7px; }
+.video-msg-bar-fill {
+  height: 100%;
+  width: var(--video-progress, 0%);
+  background: var(--p-primary-color);
+  transition: width 0.08s linear;
 }
 
 </style>
