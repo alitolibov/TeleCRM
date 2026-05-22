@@ -15,6 +15,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import { DRIZZLE, type Db } from '../db/drizzle.module'
 import * as schema from '../db/schema'
 import { UsersGateway } from './users.gateway'
+import { ChatsService } from '../chats/chats.service'
 import type { CreateUserDto } from './dto/create-user.dto'
 import type { UpdateUserDto } from './dto/update-user.dto'
 
@@ -29,6 +30,7 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(DRIZZLE) private db: Db,
     @Optional() @Inject(forwardRef(() => UsersGateway)) private gateway?: UsersGateway,
+    @Optional() @Inject(forwardRef(() => ChatsService)) private chatsService?: ChatsService,
   ) {}
 
   onModuleInit() {
@@ -183,17 +185,40 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // Release the user's open chats back to the queue BEFORE soft-deleting,
+    // so they don't end up "owned by a ghost". Closed chats stay assigned for
+    // historical record (the admin tag will still show their name).
+    const releasedCount = (await this.chatsService?.releaseChatsAssignedTo(id)) ?? 0
+
     await this.db.update(schema.users)
       .set({ deletedAt: new Date(), status: 'offline', updatedAt: new Date() })
       .where(eq(schema.users.id, id))
 
+    // Revoke all live sessions so refresh tokens stop working immediately.
+    await this.db.update(schema.sessions)
+      .set({ revokedAt: new Date() })
+      .where(and(
+        eq(schema.sessions.userId, id),
+        isNull(schema.sessions.revokedAt),
+      ))
+
+    // Kick all open WS connections (any browser tab they had open).
+    this.gateway?.disconnectUser(id)
+
     await this.db.insert(schema.actionLogs).values({
       action: 'user_deleted',
       actorId,
-      metadata: { deletedUserId: id, username: target.username },
+      metadata: { deletedUserId: id, username: target.username, releasedChats: releasedCount },
     })
 
-    return { id, deleted: true }
+    // Try to immediately reassign the released chats to whoever's still online.
+    if (releasedCount > 0) {
+      this.chatsService?.distributeQueuedChats().catch((e) =>
+        console.error('[users] distribute after delete failed:', e),
+      )
+    }
+
+    return { id, deleted: true, releasedChats: releasedCount }
   }
 
   /** Heartbeat — bumps lastSeenAt without touching status. */
@@ -231,6 +256,17 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
       lastSeenAt: updated.lastSeenAt?.toISOString() ?? null,
     }
     this.gateway?.emitUserStatus(payload)
+
+    // Coming online → drain the unassigned `new`-chat queue. Spec: "Как только
+    // сотрудник выходит Online — система предлагает ему взять чат из очереди".
+    // We auto-distribute here instead of just notifying — simpler UX, matches
+    // the auto-distribution policy used for fresh incoming messages.
+    if (status === 'online' && before.status !== 'online') {
+      this.chatsService?.distributeQueuedChats().catch((e) =>
+        console.error('[users] distributeQueuedChats failed:', e),
+      )
+    }
+
     return payload
   }
 

@@ -11,6 +11,8 @@ export interface ChatMessage {
   chatId: string
   telegramMessageId: number
   senderType: 'client' | 'manager' | 'system'
+  /** UUID of the user who sent it (null for client-sent / system messages). */
+  senderId?: string | null
   contentType: string
   content: any
   isRead: boolean
@@ -26,6 +28,8 @@ export interface Chat {
   lastMessageAt: string | null
   createdAt: string
   client: ChatClient
+  /** UUID of the manager who owns this chat (mirrors backend `assignedTo`). */
+  assignedTo?: string | null
   assignedUser?: { id: string; firstName: string; username: string } | null
   messages?: ChatMessage[]
   lastMessage?: ChatMessage | null
@@ -37,6 +41,18 @@ export const useChatsStore = defineStore('chats', () => {
   const messages = ref<ChatMessage[]>([])
 
   const totalUnread = computed(() => chats.value.reduce((s, c) => s + (c.unreadCount ?? 0), 0))
+
+  /**
+   * For managers, a chat must be visible only when assigned to them.
+   * Admin sees everything. The backend already filters /chats by role, but
+   * WS broadcasts go to everyone — so the store also filters at apply-time.
+   */
+  function isVisibleToCurrentUser(chat: { assignedTo?: string | null }): boolean {
+    const auth = useAuthStore()
+    if (!auth.user) return false
+    if (auth.user.role === 'admin') return true
+    return chat.assignedTo === auth.user.id
+  }
 
   function setChats(data: Chat[]) { chats.value = data }
 
@@ -64,18 +80,38 @@ export const useChatsStore = defineStore('chats', () => {
   }
 
   function handleChatUpdated(data: Partial<Chat> & { id: string }) {
-    // If this chat is currently open, the manager is looking at it — never let
-    // the unread counter creep above zero, even if a fresh message just landed.
+    const existing = chats.value.find(c => c.id === data.id)
+    const projectedAssignedTo = data.assignedTo !== undefined ? data.assignedTo : existing?.assignedTo
+    const projectedChat = { ...(existing ?? {}), ...data, assignedTo: projectedAssignedTo } as Chat
+    const visible = isVisibleToCurrentUser(projectedChat)
+
+    // For managers: if the chat's ownership flipped away from us, drop it.
+    if (existing && !visible) {
+      chats.value = chats.value.filter(c => c.id !== data.id)
+      if (activeChat.value?.id === data.id) activeChat.value = null
+      return
+    }
+
+    // If we don't have the chat yet but it's now visible, add it (handles
+    // auto-distribute that targets this manager — server emits chat:updated,
+    // not chat:new, so we'd otherwise miss the chat entirely).
+    if (!existing && visible) {
+      chats.value = [projectedChat, ...chats.value]
+      return
+    }
+
+    if (!existing) return  // not visible and not present — ignore
+
+    // Existing visible chat — merge fields and replace in array for reactivity.
     const isActive = activeChat.value?.id === data.id
     const overrides = isActive && data.unreadCount !== undefined ? { unreadCount: 0 } : {}
     const merged = { ...data, ...overrides }
-    // Use map() to replace the whole array — index mutation (chats.value[idx] = ...)
-    // sometimes doesn't fire Pinia reactivity for downstream computed/watch.
     chats.value = chats.value.map(c => c.id === data.id ? ({ ...c, ...merged } as Chat) : c)
     if (isActive) activeChat.value = { ...activeChat.value, ...merged } as Chat
   }
 
   function handleNewChat(chat: Chat) {
+    if (!isVisibleToCurrentUser(chat)) return
     if (!chats.value.find(c => c.id === chat.id)) chats.value.unshift(chat)
   }
 

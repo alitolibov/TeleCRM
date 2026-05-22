@@ -45,5 +45,6 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     ChatsIdRemapProcessor,
     ChatsGateway,
   ],
+  exports: [ChatsService],
 })
 export class ChatsModule {}

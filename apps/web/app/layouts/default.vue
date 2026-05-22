@@ -71,7 +71,7 @@
             </div>
           </div>
           <Button icon="pi pi-sign-out" text rounded size="small" severity="secondary"
-            v-tooltip.top="'Выйти'" @click="logout" />
+            @click="logout" />
         </div>
 
         <!-- Bottom: explicit status switch row -->
@@ -87,7 +87,6 @@
           <ToggleSwitch
             :modelValue="isOnline"
             @update:modelValue="toggleStatus"
-            v-tooltip.top="isOnline ? 'Перейти в Offline' : 'Перейти в Online'"
           />
         </div>
       </div>
@@ -103,10 +102,11 @@
 <script setup lang="ts">
 const route = useRoute()
 const { user, logout, getToken } = useAuth()
-const { connect } = useSocket()
+const { connect, on, off } = useSocket()
 const chatsStore = useChatsStore()
 const usersStore = useUsersStore()
-const { loadMe, setStatus, setupRealtime } = useUserStatus()
+const authStore = useAuthStore()
+const { loadMe, loadAll, setStatus, setupRealtime } = useUserStatus()
 const theme = inject<Ref<string>>('theme')!
 
 const totalUnread = computed(() => chatsStore.totalUnread)
@@ -121,13 +121,27 @@ async function toggleStatus(next: boolean) {
 
 function setTheme(t: string) { theme.value = t }
 
+// Server pushed `auth:revoked` — admin deleted us. Kick to /login immediately.
+function onAuthRevoked() {
+  authStore.clear()
+  navigateTo('/login')
+}
+
 onMounted(async () => {
   // Defensive: ensure socket is connected before subscribing/heartbeating.
   // The page-level connect() may or may not run first depending on route.
   const token = getToken()
   if (token) connect(token)
   await loadMe()
+  // Also load the full user directory so chat-list can resolve `senderId`
+  // → firstName for "Имя: текст" preview when admin views chats handled by others.
+  loadAll().catch(() => {})
   setupRealtime()
+  on('auth:revoked', onAuthRevoked)
+})
+
+onUnmounted(() => {
+  off('auth:revoked', onAuthRevoked)
 })
 </script>
 

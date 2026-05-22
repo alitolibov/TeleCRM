@@ -101,7 +101,6 @@ defineExpose({
     <div class="composer">
       <button
         class="composer-btn"
-        v-tooltip.top="'Прикрепить файл'"
         :disabled="uploading || isEditing"
         @click="fileInput?.click()"
       >

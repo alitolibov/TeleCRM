@@ -19,15 +19,17 @@ export const useUsersStore = defineStore('users', () => {
   function setMe(u: AppUser | null) { me.value = u }
   function setAll(users: AppUser[]) { all.value = users }
 
-  /** Apply a `user:status` WS event — updates `me` and `all`. */
+  /** Apply a `user:status` WS event — updates `me` and `all`.
+   *  Full array replacement (not index mutation) so consumers re-render. */
   function handleStatus(payload: { id: string; status: 'online' | 'offline'; lastSeenAt: string | null }) {
     if (me.value?.id === payload.id) {
       me.value = { ...me.value, status: payload.status, lastSeenAt: payload.lastSeenAt }
     }
-    const idx = all.value.findIndex(u => u.id === payload.id)
-    if (idx !== -1) {
-      all.value[idx] = { ...all.value[idx], status: payload.status, lastSeenAt: payload.lastSeenAt } as AppUser
-    }
+    all.value = all.value.map(u =>
+      u.id === payload.id
+        ? ({ ...u, status: payload.status, lastSeenAt: payload.lastSeenAt } as AppUser)
+        : u,
+    )
   }
 
   return { me, all, setMe, setAll, handleStatus }

@@ -54,12 +54,14 @@ export function useEmployees() {
     await load()
   }
 
-  /** Apply real-time status flip from WS without refetching the whole list. */
+  /** Apply real-time status flip from WS without refetching the whole list.
+   *  Full array replacement (not index mutation) so `filtered` re-evaluates. */
   function applyStatus(payload: { id: string; status: 'online' | 'offline'; lastSeenAt: string | null }) {
-    const idx = list.value.findIndex(u => u.id === payload.id)
-    if (idx !== -1) {
-      list.value[idx] = { ...list.value[idx], status: payload.status, lastSeenAt: payload.lastSeenAt } as EmployeeWithStats
-    }
+    list.value = list.value.map(u =>
+      u.id === payload.id
+        ? ({ ...u, status: payload.status, lastSeenAt: payload.lastSeenAt } as EmployeeWithStats)
+        : u,
+    )
   }
 
   return { list, loading, load, create, update, remove, applyStatus }

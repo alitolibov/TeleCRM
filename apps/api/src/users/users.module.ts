@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common'
+import { Module, forwardRef } from '@nestjs/common'
 import { JwtModule } from '@nestjs/jwt'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { UsersService } from './users.service'
 import { UsersController } from './users.controller'
 import { UsersGateway } from './users.gateway'
+import { ChatsModule } from '../chats/chats.module'
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { UsersGateway } from './users.gateway'
       }),
       inject: [ConfigService],
     }),
+    forwardRef(() => ChatsModule),
   ],
   controllers: [UsersController],
   providers: [UsersService, UsersGateway],

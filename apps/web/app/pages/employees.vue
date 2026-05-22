@@ -145,7 +145,11 @@ function colorFromString(s: string): string {
 
     <!-- Grid -->
     <div v-else class="emp-grid">
-      <div v-for="emp in filtered" :key="emp.id" class="emp-card">
+      <div
+        v-for="emp in filtered" :key="emp.id"
+        class="emp-card"
+        :class="{ 'emp-card-online': emp.status === 'online' }"
+      >
         <!-- Top: avatar + status -->
         <div class="emp-card-top">
           <div class="emp-avatar-wrap">
@@ -155,9 +159,15 @@ function colorFromString(s: string): string {
             <span class="emp-status-dot" :class="emp.status === 'online' ? 'status-dot-online' : 'status-dot-offline'" />
           </div>
           <div class="flex-1 min-w-0">
-            <div class="text-[15px] font-bold text-surface-900 truncate">
-              {{ emp.firstName }} {{ emp.lastName ?? '' }}
+            <div class="text-[15px] font-bold text-surface-900 truncate flex items-center gap-1.5">
+              <span class="truncate">
+                {{ emp.firstName }} {{ emp.lastName ?? '' }}
+              </span>
               <span v-if="emp.id === user?.id" class="emp-you">(вы)</span>
+              <span v-if="emp.status === 'online'" class="emp-online-badge">
+                <span class="emp-online-pulse" />
+                Online
+              </span>
             </div>
             <div class="text-[12px] text-surface-500 mono truncate">@{{ emp.username }}</div>
           </div>
@@ -190,7 +200,6 @@ function colorFromString(s: string): string {
             size="small"
             severity="danger"
             outlined
-            v-tooltip.top="'Удалить'"
             @click="askDelete(emp)"
           />
         </div>
@@ -277,9 +286,55 @@ function colorFromString(s: string): string {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  transition: border-color 0.15s, transform 0.15s;
+  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+  position: relative;
+  overflow: hidden;
 }
 .emp-card:hover { border-color: var(--p-surface-300); }
+
+/* Online state — green accent so admins can see who's available at a glance. */
+.emp-card-online {
+  border-color: color-mix(in srgb, #22c55e 35%, var(--p-surface-200));
+  background: color-mix(in srgb, #22c55e 4%, var(--p-surface-0));
+}
+.emp-card-online:hover {
+  border-color: color-mix(in srgb, #22c55e 55%, var(--p-surface-300));
+}
+.emp-card-online::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: #22c55e;
+}
+
+.emp-online-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px 2px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #15803d;
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+  flex-shrink: 0;
+}
+.emp-online-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  animation: emp-online-pulse 1.8s ease-out infinite;
+}
+@keyframes emp-online-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }
+  70%  { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
 
 .emp-card-top { display: flex; align-items: center; gap: 12px; }
 .emp-avatar-wrap { position: relative; flex-shrink: 0; }

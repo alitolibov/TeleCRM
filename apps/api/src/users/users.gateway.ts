@@ -54,4 +54,14 @@ export class UsersGateway implements OnGatewayConnection {
   emitUserStatus(payload: { id: string; status: 'online' | 'offline'; lastSeenAt: string | null }) {
     this.server.emit('user:status', payload)
   }
+
+  /**
+   * Force-disconnect every socket belonging to this user. Called after admin
+   * deletes the user so their open tabs are kicked back to /login.
+   */
+  disconnectUser(userId: string) {
+    // Tell frontend why first, so it can show a toast instead of just bouncing.
+    this.server.to(`user:${userId}`).emit('auth:revoked', { reason: 'account_deleted' })
+    this.server.in(`user:${userId}`).disconnectSockets()
+  }
 }

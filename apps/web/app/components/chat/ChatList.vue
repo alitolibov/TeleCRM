@@ -17,6 +17,10 @@ defineEmits<{
 const { user } = useAuth()
 const isAdmin = computed(() => user.value?.role === 'admin')
 
+// Directory of all employees — used to resolve `senderId` → firstName for
+// the chat-preview prefix when admin views chats handled by other managers.
+const usersStore = useUsersStore()
+
 const search = ref('')
 const activeFilter = ref('all')
 
@@ -48,10 +52,27 @@ function filterCount(val: string) {
   return props.chats.filter(c => c.status === val).length
 }
 
+/**
+ * Build the chat-list preview prefix:
+ *  - client message → no prefix
+ *  - own outgoing  → "Вы: "
+ *  - other manager → "{firstName}: "   (only visible to admins in practice)
+ *  - sender unknown → "Менеджер: "      (defensive fallback)
+ */
+function senderPrefix(last: NonNullable<Chat['lastMessage']>): string {
+  if (last.senderType !== 'manager') return ''
+  if (last.senderId && user.value && last.senderId === user.value.id) return 'Вы: '
+  if (last.senderId) {
+    const sender = usersStore.all.find(u => u.id === last.senderId)
+    if (sender) return `${sender.firstName}: `
+  }
+  return 'Менеджер: '
+}
+
 function chatPreview(chat: Chat): string {
   const last = chat.lastMessage
   if (!last) return ''
-  const prefix = last.senderType === 'manager' ? 'Вы: ' : ''
+  const prefix = senderPrefix(last)
   const c = last.content
   if (!c) return prefix + '...'
   switch (c.type) {

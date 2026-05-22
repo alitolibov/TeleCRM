@@ -150,6 +150,11 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         chatId: chat.id,
         telegramMessageId: event.messageId,
         senderType,
+        // Outgoing TDLib echoes (e.g. media from CRM, messages from the manager's
+        // phone) don't carry a user_id — attribute to whoever owns the chat at
+        // this moment. Without this the chat-list preview falls back to
+        // "Менеджер: " instead of the actual sender's name.
+        senderId: event.isOutgoing ? chat.assignedTo ?? null : null,
         contentType,
         content: event.content,
         isRead: event.isOutgoing,
@@ -162,12 +167,39 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     if (!message) return // duplicate — already processed
 
-    // 4. Update chat stats. Prefer Telegram's authoritative unread_count when
+    // 4. Auto-distribute — for incoming client messages in a `new` chat with no
+    // owner, pick the least-loaded online employee and assign them. Status
+    // stays `new` until the manager actually responds (then sendMessage flips
+    // it to `active`). This way the chat list still surfaces it as "fresh".
+    let autoAssignedTo: string | null = null
+    if (!event.isOutgoing && chat.status === 'new' && !chat.assignedTo) {
+      autoAssignedTo = await this.pickAssignee()
+      if (autoAssignedTo) {
+        await this.db.update(schema.chats)
+          .set({ assignedTo: autoAssignedTo, updatedAt: new Date() })
+          .where(eq(schema.chats.id, chat.id))
+        await this.db.insert(schema.actionLogs).values({
+          action: 'chat_assigned',
+          actorId: null,
+          chatId: chat.id,
+          metadata: { to: autoAssignedTo, reason: 'auto_distribute' },
+        })
+        chat = { ...chat, assignedTo: autoAssignedTo }
+        console.log(`[api] auto-distributed chat ${chat.id} → user ${autoAssignedTo}`)
+      }
+    }
+
+    // 5. Update chat stats. Prefer Telegram's authoritative unread_count when
     // available (avoids overcount when updateChatReadInbox races with
     // updateNewMessage); fall back to a local +1 increment otherwise.
+    // EXCEPTION: brand-new chat → always 1. TDLib's unread_count can include
+    // history we don't have (e.g. after a fresh DB reset) which would
+    // inflate our badge from the very first message.
     const newUnreadCount = event.isOutgoing
       ? chat.unreadCount
-      : event.unreadCount ?? chat.unreadCount + 1
+      : isNewChat
+        ? 1
+        : event.unreadCount ?? chat.unreadCount + 1
     await this.db
       .update(schema.chats)
       .set({
@@ -177,12 +209,22 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       })
       .where(eq(schema.chats.id, chat.id))
 
-    // 5. Realtime push — emit chat:new FIRST so the chat exists in the
+    // Pull assignedUser relation for emits — frontend needs it to render the
+    // owner badge in the chat list without a separate fetch.
+    const assignedUser = chat.assignedTo
+      ? await this.db.query.users.findFirst({
+          where: (u, { eq }) => eq(u.id, chat.assignedTo!),
+          columns: { id: true, firstName: true, username: true },
+        })
+      : null
+
+    // 6. Realtime push — emit chat:new FIRST so the chat exists in the
     // frontend's list before message:new tries to update it.
-    console.log(`[api] processIncomingEvent: emitting for chat ${chat.id} (isNew=${isNewChat}, gateway=${!!this.gateway})`)
+    console.log(`[api] processIncomingEvent: emitting for chat ${chat.id} (isNew=${isNewChat}, gateway=${!!this.gateway}, auto=${!!autoAssignedTo})`)
     if (isNewChat) {
       this.gateway?.emitNewChat({
         ...chat, client,
+        assignedUser,
         unreadCount: newUnreadCount,
         lastMessageAt: message.createdAt,
         lastMessage: message,
@@ -191,6 +233,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       this.gateway?.emitChatUpdated({
         id: chat.id,
         status: chat.status, // include in case it was reopened (closed→active) or upgraded (new→active)
+        ...(autoAssignedTo ? { assignedTo: autoAssignedTo, assignedUser } : {}),
         unreadCount: newUnreadCount,
         lastMessageAt: message.createdAt,
         lastMessage: message,
@@ -199,6 +242,107 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     this.gateway?.emitNewMessage(chat.id, { ...message, client })
 
     return { client, chat, message }
+  }
+
+  /**
+   * Frees up chats currently assigned to this user — sends `assignedTo=null`
+   * for active/new chats and broadcasts so admins see them flip to "в очереди"
+   * immediately. Closed chats keep their assignment (historical record).
+   * Returns the count of released chats.
+   */
+  async releaseChatsAssignedTo(userId: string): Promise<number> {
+    const released = await this.db
+      .update(schema.chats)
+      .set({ assignedTo: null, status: 'new', updatedAt: new Date() })
+      .where(and(
+        eq(schema.chats.assignedTo, userId),
+        sql`${schema.chats.status} IN ('new', 'active')`,
+      ))
+      .returning({ id: schema.chats.id })
+
+    for (const r of released) {
+      this.gateway?.emitChatUpdated({
+        id: r.id,
+        status: 'new',
+        assignedTo: null,
+        assignedUser: null,
+      })
+    }
+    return released.length
+  }
+
+  /**
+   * Drains the `new`+unassigned queue by re-running pickAssignee per chat.
+   * Called when a user comes online — they should help take pending chats.
+   * Each iteration re-picks: load balancing accounts for the assignments we
+   * just made, so a single returning manager doesn't get flooded if others
+   * are also online.
+   */
+  async distributeQueuedChats(): Promise<void> {
+    const queued = await this.db.query.chats.findMany({
+      where: (c, { eq, and, isNull }) => and(eq(c.status, 'new'), isNull(c.assignedTo)),
+      orderBy: (c, { asc }) => asc(c.createdAt),
+      limit: 50,    // safety bound
+    })
+    if (queued.length === 0) return
+
+    for (const chat of queued) {
+      const assignee = await this.pickAssignee()
+      if (!assignee) return     // nobody online anymore — stop
+
+      await this.db.update(schema.chats)
+        .set({ assignedTo: assignee, updatedAt: new Date() })
+        .where(eq(schema.chats.id, chat.id))
+      await this.db.insert(schema.actionLogs).values({
+        action: 'chat_assigned',
+        actorId: null,
+        chatId: chat.id,
+        metadata: { to: assignee, reason: 'auto_distribute_on_online' },
+      })
+
+      const assignedUser = await this.db.query.users.findFirst({
+        where: (u, { eq }) => eq(u.id, assignee),
+        columns: { id: true, firstName: true, username: true },
+      })
+      this.gateway?.emitChatUpdated({
+        id: chat.id,
+        assignedTo: assignee,
+        assignedUser,
+      })
+      console.log(`[api] drained queued chat ${chat.id} → ${assignee}`)
+    }
+  }
+
+  /**
+   * Auto-distribution: pick the online employee with the fewest active chats.
+   * Returns null if no one is online. Ties broken by user.id (stable but
+   * arbitrary) — sufficient for now; can swap to round-robin later.
+   */
+  async pickAssignee(): Promise<string | null> {
+    const online = await this.db.query.users.findMany({
+      where: (u, { eq, and, isNull }) => and(
+        eq(u.status, 'online'),
+        isNull(u.deletedAt),
+      ),
+      columns: { id: true },
+    })
+    if (online.length === 0) return null
+
+    const counts = await this.db.execute<{ user_id: string; cnt: string }>(sql`
+      SELECT assigned_to as user_id, COUNT(*)::text as cnt
+      FROM ${schema.chats}
+      WHERE status IN ('new', 'active') AND assigned_to IS NOT NULL
+      GROUP BY assigned_to
+    `)
+    const countByUser = new Map(counts.rows.map(r => [r.user_id, Number(r.cnt)]))
+
+    let bestId: string | null = null
+    let bestCount = Infinity
+    for (const u of online) {
+      const c = countByUser.get(u.id) ?? 0
+      if (c < bestCount) { bestCount = c; bestId = u.id }
+    }
+    return bestId
   }
 
   async findAll(userId: string, role: string) {
@@ -324,6 +468,18 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         assignedUser: { columns: { id: true, firstName: true, username: true } },
       },
     })
+
+    // Broadcast so admins (and any other connected session) see the change in
+    // real-time — otherwise their chat list shows the chat as "в очереди"
+    // until they refresh.
+    if (chat) {
+      this.gateway?.emitChatUpdated({
+        id: chat.id,
+        status: chat.status,
+        assignedTo: chat.assignedTo,
+        assignedUser: chat.assignedUser,
+      })
+    }
     return chat
   }
 
