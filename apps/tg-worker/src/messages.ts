@@ -281,16 +281,21 @@ export function setupMessageHandler(client: any, myUserId: number) {
     if (update.chat_id === myUserId) return
     if (SERVICE_USER_IDS.has(update.chat_id)) return
 
-    // edit_date is on the message itself, not on this update — fetch it
-    let editDate = Math.floor(Date.now() / 1000)
+    // updateMessageContent fires for genuine edits AND when an outgoing media
+    // upload finalizes (the photo/video/file content resolves after sending).
+    // Only a real user edit has a non-zero edit_date — without this guard every
+    // freshly-sent photo/file gets falsely flagged as "изменено".
+    let editDate = 0
     try {
       const msg = await client.invoke({
         _: 'getMessage',
         chat_id: update.chat_id,
         message_id: update.message_id,
       })
-      if (msg?.edit_date) editDate = msg.edit_date
+      editDate = msg?.edit_date ?? 0
     } catch {}
+
+    if (!editDate) return  // content finalization after send, not an edit — ignore
 
     const event: TgMessageEditedEvent = {
       chatId: update.chat_id,

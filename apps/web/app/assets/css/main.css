@@ -197,7 +197,40 @@ body,
 /* ===== Manager tag (admin-only) on chat list rows ===== */
 .chat-row-tag-line {
   display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 6px;
+}
+
+/* Status pill shown on every chat row (new / active / closed). */
+.chat-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.chat-row-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.chat-row-status-new {
+  color: var(--p-blue-500, #3b82f6);
+  background: color-mix(in srgb, var(--p-blue-500, #3b82f6) 13%, transparent);
+}
+.chat-row-status-active {
+  color: var(--p-green-600, #059669);
+  background: color-mix(in srgb, var(--p-green-500, #10b981) 14%, transparent);
+}
+.chat-row-status-closed {
+  color: var(--p-surface-500);
+  background: var(--p-surface-100);
 }
 .chat-row-tag {
   display: inline-flex;

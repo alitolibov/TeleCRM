@@ -8,7 +8,25 @@
     />
 
     <!-- ============ Chat Area ============ -->
-    <main v-if="activeChat" class="flex-1 flex flex-col min-w-0 chat-area-bg">
+    <main
+      v-if="activeChat"
+      class="flex-1 flex flex-col min-w-0 chat-area-bg relative"
+      @dragenter.prevent="onDragEnter"
+      @dragover.prevent="onDragOver"
+      @dragleave.prevent="onDragLeave"
+      @drop.prevent="onDrop"
+    >
+      <!-- Drag & drop overlay -->
+      <Transition name="fade">
+        <div v-if="isDragging" class="drop-overlay">
+          <div class="drop-overlay-box">
+            <i class="pi pi-cloud-upload" />
+            <div class="drop-overlay-title">Перетащите файлы сюда</div>
+            <div class="drop-overlay-sub">фото, видео и документы</div>
+          </div>
+        </div>
+      </Transition>
+
       <ChatHeader
         :chat="activeChat"
         @assign="handleAssign"
@@ -78,14 +96,17 @@
       </div>
 
       <Composer
+        ref="composerRef"
         v-model="composerText"
         :editing-message="editingMessage"
         :replying-to="replyingTo"
         :uploading="uploading"
+        :attachments="attachments.items.value"
         @send="handleSend"
         @cancel-edit="cancelEditing"
         @cancel-reply="cancelReplying"
-        @file="onFileSelected"
+        @add-files="onAddFiles"
+        @remove-attachment="attachments.remove"
       />
     </main>
 
@@ -167,6 +188,10 @@ const closeChatSaving = ref(false)
 const composerText = ref('')
 const uploading = ref(false)
 
+// Files queued in the composer before sending (Telegram-style preview tray).
+const attachments = useAttachments()
+const composerRef = ref<{ focus: () => void; focusNow: () => void } | null>(null)
+
 // === Edit / Delete / Reply state via composable ===
 const {
   editingMessage, replyingTo, deleteDialog, actionMenuPos, actionMenuMsg,
@@ -198,7 +223,7 @@ const {
   onScroll, scrollToBottom, resetForChat,
 } = useChatScroll({
   activeChatId: computed(() => activeChat.value?.id ?? null),
-  messageCount: computed(() => messages.value.length),
+  lastMessageId: computed(() => messages.value[messages.value.length - 1]?.id ?? null),
   loadOlder,
 })
 
@@ -222,11 +247,15 @@ function startEditingMessage(msg: typeof actionMenuMsg.value) {
 }
 
 async function handleSend() {
+  if (!activeChat.value) return
   const body = composerText.value.trim()
-  if (!body || !activeChat.value) return
+  const hasFiles = attachments.items.value.length > 0
+  if (!body && !hasFiles) return
 
-  // Edit mode — takeover was already confirmed at startEditingMessage
+  // Edit mode — takeover was already confirmed at startEditingMessage.
+  // (Editing never carries attachments.)
   if (editingMessage.value) {
+    if (!body) return
     await editMessage(editingMessage.value.id, body)
     cancelEditing()
     composerText.value = ''
@@ -239,47 +268,73 @@ async function handleSend() {
   if (activeChat.value.status === 'new') {
     askTakeChat(async () => {
       try { await assignChat(activeChat.value!.id) } catch { return }
-      await doSend(body, replyTargetId)
+      await doDispatch(body, replyTargetId)
     })
     return
   }
 
   // Admin sending to another manager's chat — confirm takeover first
-  withGuard(activeChat.value, 'отправить сообщение', () => doSend(body, replyTargetId))
+  withGuard(activeChat.value, 'отправить сообщение', () => doDispatch(body, replyTargetId))
 }
 
-async function doSend(body: string, replyTo?: string) {
-  await sendMessage(body, replyTo)
+/** Sends queued attachments (if any) and/or the text body, then resets the composer. */
+async function doDispatch(body: string, replyTo?: string) {
+  const files = attachments.items.value
+  if (files.length > 0) {
+    await doUpload(files.map(a => a.file), body)
+  } else if (body) {
+    await sendMessage(body, replyTo)
+  }
   composerText.value = ''
+  attachments.clear()
   cancelReplying()
   await nextTick()
   scrollToBottom()
 }
 
-async function onFileSelected(file: File) {
-  if (!activeChat.value) return
-  if (activeChat.value.status === 'new') {
-    askTakeChat(async () => {
-      try { await assignChat(activeChat.value!.id) } catch { return }
-      await doUpload(file)
-    })
-    return
-  }
-  withGuard(activeChat.value, 'отправить файл', () => doUpload(file))
-}
-
-async function doUpload(file: File) {
+/** Upload all queued files in one request — the API groups photos/videos into
+ *  a Telegram album and sends documents individually. Caption goes on the first. */
+async function doUpload(files: File[], caption: string) {
   uploading.value = true
   try {
-    const form = new FormData()
-    form.append('file', file)
     const { api } = useApi()
+    const form = new FormData()
+    for (const f of files) form.append('files', f)
+    if (caption) form.append('caption', caption)
     await api(`/chats/${activeChat.value!.id}/upload`, { method: 'POST', body: form })
     await nextTick()
     scrollToBottom()
   } finally {
     uploading.value = false
   }
+}
+
+// === Add files (from picker, drag-drop, or paste) ===
+function onAddFiles(files: File[]) {
+  attachments.add(files)
+  nextTick(() => composerRef.value?.focusNow())
+}
+
+// === Drag & drop ===
+const isDragging = ref(false)
+let dragDepth = 0
+function onDragEnter(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  dragDepth++
+  isDragging.value = true
+}
+function onDragOver(e: DragEvent) {
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) isDragging.value = false
+}
+function onDrop(e: DragEvent) {
+  dragDepth = 0
+  isDragging.value = false
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  if (files.length) onAddFiles(files)
 }
 
 // === Take/assign flow ===
@@ -386,16 +441,36 @@ function jumpToMessage(messageId: string) {
 
 async function handleOpenChat(id: string) {
   resetForChat()
+  attachments.clear()        // don't carry queued files between chats
+  composerText.value = ''
   await openChat(id)
   await refreshClientInfo(id)
   await nextTick()
   scrollToBottom()
+  composerRef.value?.focus()  // ready to type immediately
+}
+
+/** Type-to-focus: pressing a printable key anywhere jumps into the composer,
+ *  so you can open a chat and just start typing (Telegram/Slack behaviour). */
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (!activeChat.value) return
+  if (e.ctrlKey || e.metaKey || e.altKey) return
+  if (e.key.length !== 1) return  // ignore Enter, Tab, arrows, F-keys, etc.
+  const t = e.target as HTMLElement | null
+  const tag = t?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return
+  composerRef.value?.focusNow()
 }
 
 onMounted(async () => {
   const token = getToken()
   if (token) connect(token)
   setupRealtime()
+  window.addEventListener('keydown', onGlobalKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 </script>
 
@@ -1187,6 +1262,142 @@ onMounted(async () => {
   color: var(--p-primary-contrast-color, #fff);
 }
 .composer-send-active:hover { filter: brightness(1.08); transform: scale(1.04); }
+
+/* ===== Attachment preview tray ===== */
+.attach-tray {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 16px 4px;
+  background: var(--p-surface-0);
+  border-top: 1px solid var(--divider);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.attach-item {
+  position: relative;
+  flex-shrink: 0;
+  width: 84px;
+  height: 84px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--p-surface-200);
+  background: var(--p-surface-100);
+}
+.attach-item-file {
+  width: auto;
+  min-width: 180px;
+  max-width: 240px;
+  height: 64px;
+  border-radius: 10px;
+}
+.attach-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.attach-video { position: relative; }
+.attach-video-el { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-video-icon {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 18px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+}
+.attach-fileinfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  padding: 0 12px;
+}
+.attach-fileicon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--p-primary-color) 14%, transparent);
+  color: var(--p-primary-color);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+.attach-filemeta { min-width: 0; }
+.attach-filename {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-surface-800);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attach-filesize { font-size: 11px; color: var(--p-surface-500); margin-top: 1px; }
+.attach-remove {
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 9px;
+  backdrop-filter: blur(4px);
+  transition: background 0.12s;
+}
+.attach-remove:hover { background: rgba(0, 0, 0, 0.75); }
+.attach-add {
+  flex-shrink: 0;
+  width: 84px;
+  height: 84px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--p-surface-300);
+  color: var(--p-surface-400);
+  font-size: 18px;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.attach-add:hover {
+  border-color: var(--p-primary-color);
+  color: var(--p-primary-color);
+  background: color-mix(in srgb, var(--p-primary-color) 6%, transparent);
+}
+
+/* ===== Drag & drop overlay ===== */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--p-primary-color) 12%, transparent);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+.drop-overlay-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 48px;
+  border-radius: 20px;
+  border: 2.5px dashed var(--p-primary-color);
+  background: color-mix(in srgb, var(--p-surface-0) 80%, transparent);
+}
+.drop-overlay-box > .pi { font-size: 38px; color: var(--p-primary-color); }
+.drop-overlay-title { font-size: 16px; font-weight: 700; color: var(--p-surface-900); }
+.drop-overlay-sub { font-size: 12.5px; color: var(--p-surface-500); }
 </style>
 
 <!-- Global styles for elements that teleport outside the page (body) -->

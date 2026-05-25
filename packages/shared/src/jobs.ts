@@ -10,7 +10,10 @@ export interface TgOutgoingJob {
 export type TgOutgoingContent =
   | { type: 'text'; text: string }
   | { type: 'photo'; filePath: string; caption?: string }
+  | { type: 'video'; filePath: string; caption?: string }
   | { type: 'document'; filePath: string; fileName: string; caption?: string }
+  /** 2-10 photos/videos sent grouped as a Telegram album (media group). */
+  | { type: 'album'; items: Array<{ kind: 'photo' | 'video'; filePath: string }>; caption?: string }
   | { type: 'viewMessages'; messageIds: number[] }
 
 export interface TgHistoryRequestJob {

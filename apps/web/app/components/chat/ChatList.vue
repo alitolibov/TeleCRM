@@ -162,33 +162,30 @@ function statusLabel(s: string) {
               {{ chatPreview(chat) }}
             </span>
             <div class="flex items-center gap-1.5 flex-shrink-0">
-              <span
-                v-if="chat.status !== 'active'"
-                class="status-dot"
-                :class="`status-dot-${chat.status}`"
-                :title="statusLabel(chat.status)"
-              />
               <span v-if="chat.unreadCount > 0" class="unread-badge">{{ chat.unreadCount }}</span>
             </div>
           </div>
 
-          <!-- Admin-only: tag showing chat ownership at a glance.
-               • assigned     → manager's first name
-               • new, queued  → neutral "в очереди" badge
-               • anomaly      → orange "без владельца" badge -->
-          <div v-if="isAdmin" class="chat-row-tag-line">
-            <span v-if="chat.assignedUser" class="chat-row-tag">
-              <i class="pi pi-user text-[9px]" />
-              {{ chat.assignedUser.firstName }}
+          <!-- Status tag (everyone) + admin-only ownership tag. -->
+          <div class="chat-row-tag-line">
+            <span class="chat-row-status" :class="`chat-row-status-${chat.status}`">
+              <span class="chat-row-status-dot" />
+              {{ statusLabel(chat.status) }}
             </span>
-            <span v-else-if="chat.status === 'new'" class="chat-row-tag chat-row-tag-queued">
-              <i class="pi pi-inbox text-[9px]" />
-              в очереди
-            </span>
-            <span v-else class="chat-row-tag chat-row-tag-warning">
-              <i class="pi pi-exclamation-triangle text-[9px]" />
-              без владельца
-            </span>
+            <template v-if="isAdmin">
+              <span v-if="chat.assignedUser" class="chat-row-tag">
+                <i class="pi pi-user text-[9px]" />
+                {{ chat.assignedUser.firstName }}
+              </span>
+              <span v-else-if="chat.status === 'new'" class="chat-row-tag chat-row-tag-queued">
+                <i class="pi pi-inbox text-[9px]" />
+                в очереди
+              </span>
+              <span v-else class="chat-row-tag chat-row-tag-warning">
+                <i class="pi pi-exclamation-triangle text-[9px]" />
+                без владельца
+              </span>
+            </template>
           </div>
         </div>
       </button>

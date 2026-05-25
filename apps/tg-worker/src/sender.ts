@@ -54,6 +54,37 @@ export function setupSender(client: any) {
         return
       }
 
+      if (content.type === 'video') {
+        await client.invoke(buildPayload({
+          _: 'inputMessageVideo',
+          video: { _: 'inputFileLocal', path: content.filePath },
+          supports_streaming: true,
+          caption: content.caption
+            ? { _: 'formattedText', text: content.caption, entities: [] }
+            : undefined,
+        }))
+        return
+      }
+
+      if (content.type === 'album') {
+        // 2-10 photos/videos grouped as a media album. Caption rides on the
+        // first item (Telegram shows one caption per album).
+        const inputs = content.items.map((it, i) => {
+          const cap = i === 0 && content.caption
+            ? { _: 'formattedText', text: content.caption, entities: [] }
+            : undefined
+          return it.kind === 'video'
+            ? { _: 'inputMessageVideo', video: { _: 'inputFileLocal', path: it.filePath }, supports_streaming: true, caption: cap }
+            : { _: 'inputMessagePhoto', photo: { _: 'inputFileLocal', path: it.filePath }, caption: cap }
+        })
+        await client.invoke({
+          _: 'sendMessageAlbum',
+          chat_id: chatId,
+          input_message_contents: inputs,
+        })
+        return
+      }
+
       if (content.type === 'document') {
         await client.invoke(buildPayload({
           _: 'inputMessageDocument',

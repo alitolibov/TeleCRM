@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { ChatMessage } from '~/stores/chats'
+import type { Attachment } from '~/composables/useAttachments'
 
 const props = defineProps<{
   modelValue: string                   // v-model for text
   editingMessage: ChatMessage | null
   replyingTo: ChatMessage | null
   uploading: boolean
+  attachments: Attachment[]
 }>()
 
 const emit = defineEmits<{
@@ -13,7 +15,8 @@ const emit = defineEmits<{
   (e: 'send'): void
   (e: 'cancelEdit'): void
   (e: 'cancelReply'): void
-  (e: 'file', file: File): void
+  (e: 'addFiles', files: File[]): void
+  (e: 'removeAttachment', id: string): void
 }>()
 
 function replyPreview(target: ChatMessage): string {
@@ -39,12 +42,36 @@ const text = computed({
 })
 
 const isEditing = computed(() => !!props.editingMessage)
+const hasAttachments = computed(() => props.attachments.length > 0)
+// Send is allowed with text, or with attachments (caption optional).
+const canSend = computed(() => text.value.trim().length > 0 || hasAttachments.value)
 
 function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
+  const files = input.files ? Array.from(input.files) : []
   input.value = ''
-  if (file) emit('file', file)
+  if (files.length) emit('addFiles', files)
+}
+
+/** Paste an image straight from the clipboard into the attachment tray. */
+function onPaste(e: ClipboardEvent) {
+  if (isEditing.value) return
+  const files = Array.from(e.clipboardData?.files ?? [])
+  if (files.length) {
+    e.preventDefault()
+    emit('addFiles', files)
+  }
+}
+
+function fileExt(name: string): string {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE'
+}
+
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`
 }
 
 /** Cancelling edit must also clear the input — otherwise the previously-loaded
@@ -54,14 +81,20 @@ function onCancelEdit() {
   emit('cancelEdit')
 }
 
-// Allow parent to focus the textarea after entering edit mode.
+function onSend() {
+  if (!canSend.value) return
+  emit('send')
+}
+
+function focusTextarea() {
+  const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
+  ta?.focus()
+}
+
+// Allow parent to focus the textarea (on chat open, edit start, type-to-focus).
 defineExpose({
-  focus() {
-    nextTick(() => {
-      const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
-      ta?.focus()
-    })
-  },
+  focus() { nextTick(focusTextarea) },
+  focusNow() { focusTextarea() },
 })
 </script>
 
@@ -97,6 +130,36 @@ defineExpose({
       </button>
     </div>
 
+    <!-- Attachment preview tray -->
+    <div v-if="hasAttachments" class="attach-tray">
+      <div
+        v-for="att in attachments" :key="att.id"
+        class="attach-item"
+        :class="{ 'attach-item-file': att.kind === 'file' }"
+      >
+        <img v-if="att.kind === 'image' && att.url" :src="att.url" class="attach-thumb" alt="" />
+        <div v-else-if="att.kind === 'video' && att.url" class="attach-thumb attach-video">
+          <video :src="att.url" class="attach-video-el" muted />
+          <i class="pi pi-play attach-video-icon" />
+        </div>
+        <div v-else class="attach-fileinfo">
+          <div class="attach-fileicon">{{ fileExt(att.file.name) }}</div>
+          <div class="attach-filemeta">
+            <div class="attach-filename">{{ att.file.name }}</div>
+            <div class="attach-filesize">{{ fileSize(att.file.size) }}</div>
+          </div>
+        </div>
+        <button class="attach-remove" type="button" @click="$emit('removeAttachment', att.id)">
+          <i class="pi pi-times" />
+        </button>
+      </div>
+
+      <!-- Add more -->
+      <button class="attach-add" type="button" @click="fileInput?.click()">
+        <i class="pi pi-plus" />
+      </button>
+    </div>
+
     <!-- Composer -->
     <div class="composer">
       <button
@@ -109,6 +172,7 @@ defineExpose({
       <input
         ref="fileInput"
         type="file"
+        multiple
         class="hidden"
         accept="image/*,application/pdf,video/*,audio/*,.doc,.docx,.xls,.xlsx,.zip,.rar,.txt"
         @change="onFileChange"
@@ -116,21 +180,22 @@ defineExpose({
       <div class="composer-input">
         <Textarea
           v-model="text"
-          placeholder="Сообщение..."
+          :placeholder="hasAttachments ? 'Добавьте подпись...' : 'Сообщение...'"
           :rows="1"
           autoResize
           unstyled
           class="composer-textarea"
-          @keydown.enter.exact.prevent="$emit('send')"
+          @paste="onPaste"
+          @keydown.enter.exact.prevent="onSend"
         />
       </div>
       <button
         class="composer-send"
-        :class="{ 'composer-send-active': text.trim().length > 0 }"
-        :disabled="!text.trim()"
-        @click="$emit('send')"
+        :class="{ 'composer-send-active': canSend }"
+        :disabled="!canSend || uploading"
+        @click="onSend"
       >
-        <i class="pi pi-send" />
+        <i :class="uploading ? 'pi pi-spin pi-spinner' : 'pi pi-send'" />
       </button>
     </div>
   </div>

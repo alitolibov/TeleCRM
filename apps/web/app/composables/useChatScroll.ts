@@ -9,8 +9,10 @@ import type { Ref } from 'vue'
 export function useChatScroll(opts: {
   /** ID of the chat currently open (for backfill calls) */
   activeChatId: Ref<string | null>
-  /** Number of messages currently rendered — watched for new arrivals */
-  messageCount: Ref<number>
+  /** ID of the LAST message in the list — watched for genuinely new arrivals.
+   *  We track the tail (not the count) so backfilling older history on scroll-up
+   *  doesn't get mistaken for a new incoming message. */
+  lastMessageId: Ref<string | null>
   /** Fetches older history; returns number of NEW messages added */
   loadOlder: (chatId: string) => Promise<number>
 }) {
@@ -54,10 +56,11 @@ export function useChatScroll(opts: {
     }
   }
 
-  // Auto-follow on new messages when the user is near the bottom; otherwise
-  // increment the unread-since-scroll counter on the floating FAB.
-  watch(opts.messageCount, async (newLen, oldLen) => {
-    if (newLen <= (oldLen ?? 0)) return
+  // A genuinely new message appended at the BOTTOM changes the tail id. Backfill
+  // (prepending older history) leaves the tail unchanged, so it won't trigger.
+  // When near the bottom we auto-follow; otherwise bump the floating-FAB counter.
+  watch(opts.lastMessageId, async (newId, oldId) => {
+    if (!newId || newId === oldId) return
     await nextTick()
     const el = messagesEl.value
     if (!el) return
@@ -65,7 +68,7 @@ export function useChatScroll(opts: {
     if (distanceFromBottom < 200) {
       scrollToBottom()
     } else {
-      newSinceUnscrolled.value += newLen - (oldLen ?? 0)
+      newSinceUnscrolled.value += 1
     }
   })
 

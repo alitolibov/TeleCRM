@@ -7,6 +7,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type {
   TgMessageEvent,
   TgOutgoingJob,
+  TgOutgoingContent,
   TgHistoryRequestJob,
   TgHistoryResponse,
   TgReadSyncEvent,
@@ -906,10 +907,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   // === File uploads from CRM ===
   async sendMedia(
     chatId: string,
-    filePath: string,
-    fileName: string,
-    mimeType: string,
-    _size: number,
+    files: Array<{ filePath: string; fileName: string; mimeType: string; size: number }>,
     senderId: string,
     senderRole: 'admin' | 'manager',
     caption?: string,
@@ -920,16 +918,45 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     })
     if (!chat) throw new Error('Chat not found')
 
-    const isImage = mimeType.startsWith('image/')
-    const contentType: schema.ContentType = isImage ? 'photo' : 'document'
+    const tgChatId = chat.client.telegramId
 
-    // Queue the upload + send to tg-worker
-    await this.outgoingQueue.add('send', {
-      chatId: chat.client.telegramId,
-      content: isImage
-        ? { type: 'photo', filePath, caption }
-        : { type: 'document', filePath, fileName, caption },
-    })
+    // Build the outgoing jobs. Photos/videos are grouped into Telegram albums
+    // (media groups, 2-10 each); documents are sent individually. The caption
+    // attaches to the first job only, mirroring Telegram's one-caption-per-album.
+    const mediaKind = (m: string): 'photo' | 'video' | null =>
+      m.startsWith('image/') ? 'photo' : m.startsWith('video/') ? 'video' : null
+    const mediaFiles = files.filter((f) => mediaKind(f.mimeType) !== null)
+    const docFiles = files.filter((f) => mediaKind(f.mimeType) === null)
+
+    const jobs: TgOutgoingContent[] = []
+    let captionLeft: string | undefined = caption
+    const takeCaption = () => { const c = captionLeft; captionLeft = undefined; return c }
+
+    // Media in chunks of 10 → album if ≥2, single photo/video otherwise.
+    for (let i = 0; i < mediaFiles.length; i += 10) {
+      const chunk = mediaFiles.slice(i, i + 10)
+      if (chunk.length >= 2) {
+        jobs.push({
+          type: 'album',
+          items: chunk.map((f) => ({ kind: mediaKind(f.mimeType)!, filePath: f.filePath })),
+          caption: takeCaption(),
+        })
+      } else {
+        const f = chunk[0]!
+        jobs.push(mediaKind(f.mimeType) === 'video'
+          ? { type: 'video', filePath: f.filePath, caption: takeCaption() }
+          : { type: 'photo', filePath: f.filePath, caption: takeCaption() })
+      }
+    }
+    for (const f of docFiles) {
+      jobs.push({ type: 'document', filePath: f.filePath, fileName: f.fileName, caption: takeCaption() })
+    }
+
+    for (const content of jobs) {
+      await this.outgoingQueue.add('send', { chatId: tgChatId, content })
+    }
+
+    const contentType: schema.ContentType = mediaFiles.length > 0 ? 'photo' : 'document'
 
     // For text we save a 'sending' placeholder; for media we wait for the TDLib
     // echo (it brings a real fileId that the /files endpoint can serve).
@@ -971,7 +998,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       lastMessageAt: new Date(),
     })
 
-    return { queued: true, contentType, fileName }
+    return { queued: true, contentType, count: files.length }
   }
 
   // === Edit / Delete ===

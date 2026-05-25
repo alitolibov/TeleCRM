@@ -10,11 +10,11 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  UploadedFile,
+  UploadedFiles,
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common'
-import { FileInterceptor } from '@nestjs/platform-express'
+import { FilesInterceptor } from '@nestjs/platform-express'
 import { diskStorage } from 'multer'
 import { extname } from 'path'
 import { randomUUID } from 'crypto'
@@ -117,7 +117,7 @@ export class ChatsController {
 
   @Post(':id/upload')
   @UseInterceptors(
-    FileInterceptor('file', {
+    FilesInterceptor('files', 10, {
       storage: diskStorage({
         destination: '/tmp/telecrm-uploads',
         filename: (_req, file, cb) => {
@@ -125,22 +125,24 @@ export class ChatsController {
           cb(null, safeName)
         },
       }),
-      limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+      limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB per file
     }),
   )
   upload(
     @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body('caption') caption: string | undefined,
     @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
   ) {
-    if (!file) throw new BadRequestException('No file uploaded')
+    if (!files?.length) throw new BadRequestException('No file uploaded')
     return this.chatsService.sendMedia(
       id,
-      file.path,
-      file.originalname,
-      file.mimetype,
-      file.size,
+      files.map((f) => ({
+        filePath: f.path,
+        fileName: f.originalname,
+        mimeType: f.mimetype,
+        size: f.size,
+      })),
       user.id,
       user.role,
       caption,
