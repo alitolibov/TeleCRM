@@ -3,6 +3,32 @@ definePageMeta({ middleware: 'auth' })
 
 const usersStore = useUsersStore()
 const { loadMe, setStatus } = useUserStatus()
+const { soundEnabled, setEnabled: setSoundEnabled, play: playSound } = useNotificationSound()
+
+// Toggle + play a preview so the user hears what they just enabled.
+function onSoundToggle(next: boolean) {
+  setSoundEnabled(next)
+  if (next) playSound()
+}
+
+// === Browser push ===
+const push = usePushNotifications()
+const pushBusy = ref(false)
+const pushDenied = computed(() => push.permission.value === 'denied')
+
+async function onPushToggle(next: boolean) {
+  pushBusy.value = true
+  try {
+    if (next) await push.enable()
+    else await push.disable()
+  } catch (e) {
+    console.error(e)
+  } finally {
+    pushBusy.value = false
+  }
+}
+
+onMounted(() => push.init())
 
 const isOnline = computed(() => usersStore.me?.status === 'online')
 const lastSeenLabel = computed(() => {
@@ -63,6 +89,52 @@ onMounted(() => {
             При закрытии вкладки браузера ты автоматически перейдёшь в статус
             «Не доступен» через 5 минут.
           </span>
+        </div>
+      </section>
+
+      <!-- Notifications section -->
+      <section class="settings-card">
+        <header class="settings-card-head">
+          <i class="pi pi-bell text-primary-500" />
+          <div>
+            <h2 class="text-[15px] font-bold text-surface-900">Уведомления</h2>
+            <p class="text-[12px] text-surface-500 mt-0.5">
+              Звуковой сигнал и счётчик непрочитанных на вкладке браузера.
+            </p>
+          </div>
+        </header>
+
+        <div class="settings-row">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Звук при новом сообщении</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">
+              Короткий сигнал, когда приходит сообщение от клиента
+            </span>
+          </div>
+          <ToggleSwitch :modelValue="soundEnabled" @update:modelValue="onSoundToggle" />
+        </div>
+
+        <div class="settings-row mt-2">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Push-уведомления в браузере</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">
+              Всплывающие уведомления, даже когда вкладка свёрнута
+            </span>
+          </div>
+          <ToggleSwitch
+            :modelValue="push.subscribed.value"
+            :disabled="!push.supported.value || pushDenied || pushBusy"
+            @update:modelValue="onPushToggle"
+          />
+        </div>
+
+        <div v-if="!push.supported.value" class="settings-hint">
+          <i class="pi pi-exclamation-triangle text-amber-500 text-[13px] mt-0.5" />
+          <span>Браузер не поддерживает push-уведомления.</span>
+        </div>
+        <div v-else-if="pushDenied" class="settings-hint">
+          <i class="pi pi-exclamation-triangle text-amber-500 text-[13px] mt-0.5" />
+          <span>Уведомления заблокированы в настройках браузера — разреши их для этого сайта, чтобы включить.</span>
         </div>
       </section>
     </div>

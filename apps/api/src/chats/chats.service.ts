@@ -21,6 +21,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
 import { DRIZZLE } from '../db/drizzle.module'
 import * as schema from '../db/schema'
 import { ChatsGateway } from './chats.gateway'
+import { NotificationsService } from '../notifications/notifications.service'
 
 @Injectable()
 export class ChatsService implements OnModuleInit, OnModuleDestroy {
@@ -36,6 +37,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(REDIS_QUEUES.tgDelete) private deleteQueue: Queue<TgDeleteJob>,
     private configService: ConfigService,
     @Optional() private gateway: ChatsGateway,
+    @Optional() private notifications?: NotificationsService,
   ) {}
 
   async onModuleInit() {
@@ -249,7 +251,39 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }
     this.gateway?.emitNewMessage(chat.id, { ...message, client })
 
+    // 7. Browser push (spec 10.2): a client message goes to the responsible
+    // manager; an unassigned new chat (everyone offline) goes to admins. The
+    // service worker suppresses the toast if the app window is already focused.
+    if (!event.isOutgoing && this.notifications) {
+      const name = [client.firstName, client.lastName].filter(Boolean).join(' ') || 'Клиент'
+      const payload = {
+        title: name,
+        body: this.messagePreview(event.content),
+        chatId: chat.id,
+        tag: chat.id,
+      }
+      if (chat.assignedTo) {
+        this.notifications.sendToUser(chat.assignedTo, payload).catch(() => {})
+      } else {
+        this.notifications.sendToAdmins(payload).catch(() => {})
+      }
+    }
+
     return { client, chat, message }
+  }
+
+  /** One-line preview of a message for notifications / list previews. */
+  private messagePreview(content: any): string {
+    switch (content?.type) {
+      case 'text':      return content.text?.slice(0, 120) ?? ''
+      case 'photo':     return '📷 Фото' + (content.caption ? `: ${content.caption}` : '')
+      case 'video':     return '🎥 Видео' + (content.caption ? `: ${content.caption}` : '')
+      case 'voice':     return '🎤 Голосовое сообщение'
+      case 'videoNote': return '⭕ Видеосообщение'
+      case 'document':  return '📎 ' + (content.fileName || 'Файл')
+      case 'sticker':   return (content.emoji || '🎁') + ' Стикер'
+      default:          return 'Новое сообщение'
+    }
   }
 
   /**

@@ -12,6 +12,7 @@ import {
   ChatsIdRemapProcessor,
 } from './chats.processor'
 import { ChatsGateway } from './chats.gateway'
+import { NotificationsModule } from '../notifications/notifications.module'
 import { REDIS_QUEUES } from '@telecrm/shared'
 
 @Module({
@@ -34,6 +35,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       }),
       inject: [ConfigService],
     }),
+    NotificationsModule,
   ],
   controllers: [ChatsController],
   providers: [

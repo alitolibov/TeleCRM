@@ -47,6 +47,7 @@ export function useChats() {
   const store = useChatsStore()
   const { chats, activeChat, messages } = storeToRefs(store)
   const { on, off, emit } = useSocket()
+  const sound = useNotificationSound()
 
   // === Paginated, filterable chat list (spec 5.1–5.2) ===
   const loading = ref(true)
@@ -218,6 +219,9 @@ export function useChats() {
     const onNewMessage = (msg: ChatMessage & { client: ChatClient }) => {
       console.log('[ws] ← message:new', { chatId: msg.chatId, type: msg.content?.type })
       store.handleNewMessage(msg)
+
+      // Notification chime for every incoming client message (spec 10.1).
+      if (msg.senderType === 'client') sound.play()
 
       // If a client message arrived for the chat we're currently viewing,
       // tell the backend (and Telegram) we've seen it. Debounced so a burst

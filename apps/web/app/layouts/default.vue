@@ -107,10 +107,16 @@ const chatsStore = useChatsStore()
 const usersStore = useUsersStore()
 const authStore = useAuthStore()
 const { loadMe, loadAll, setStatus, setupRealtime } = useUserStatus()
+const push = usePushNotifications()
 const theme = inject<Ref<string>>('theme')!
 
 const totalUnread = computed(() => chatsStore.totalUnread)
 const initials = computed(() => (user.value?.firstName ?? '').slice(0, 2).toUpperCase())
+
+// Unread counter in the browser tab title (spec 10.1).
+useHead({
+  title: computed(() => totalUnread.value > 0 ? `(${totalUnread.value}) TeleCRM` : 'TeleCRM'),
+})
 
 // Live status comes from usersStore.me — kept in sync with `user:status` WS events.
 const isOnline = computed(() => usersStore.me?.status === 'online')
@@ -137,6 +143,7 @@ onMounted(async () => {
   // → firstName for "Имя: текст" preview when admin views chats handled by others.
   loadAll().catch(() => {})
   setupRealtime()
+  push.init().catch(() => {})   // register service worker + sync push subscription
   on('auth:revoked', onAuthRevoked)
 })
 
