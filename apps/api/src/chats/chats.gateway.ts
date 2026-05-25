@@ -82,4 +82,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitMessageDeleted(_chatId: string, payload: unknown) {
     this.server.emit('message:deleted', payload)
   }
+
+  emitMessageStatus(payload: unknown) {
+    this.server.emit('message:status', payload)
+  }
 }

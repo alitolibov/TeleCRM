@@ -2,7 +2,7 @@ import { Inject, Injectable, Optional, OnModuleInit, OnModuleDestroy } from '@ne
 import { Queue, QueueEvents } from 'bullmq'
 import { InjectQueue } from '@nestjs/bullmq'
 import { ConfigService } from '@nestjs/config'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, or, isNull, ilike, desc, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type {
   TgMessageEvent,
@@ -133,6 +133,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
           .update(schema.messages)
           .set({ telegramMessageId: event.messageId, status: 'sent' })
           .where(eq(schema.messages.id, echoed.id))
+        // Tell the CRM the optimistic "отправляется…" bubble is now delivered.
+        this.gateway?.emitMessageStatus({
+          id: echoed.id,
+          chatId: chat.id,
+          status: 'sent',
+          telegramMessageId: event.messageId,
+        })
         return // already shown via sendMessage API response
       }
     }
@@ -346,31 +353,103 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return bestId
   }
 
-  async findAll(userId: string, role: string) {
-    const chats = await this.db.query.chats.findMany({
-      where: role === 'manager'
-        ? (c, { eq }) => eq(c.assignedTo, userId)
-        : undefined,
+  /**
+   * Paginated, filterable chat list (spec 5.1–5.2).
+   *  - cursor pagination, `limit` rows per page (default 30)
+   *  - filters: status, responsible manager (admin only), last-message date range
+   *  - search: client name/username OR message text (ILIKE)
+   * Returns `{ items, nextCursor }`; `nextCursor` is null when the last page is reached.
+   *
+   * Sort key is `coalesce(last_message_at, created_at)` (never null) with `id` as a
+   * tiebreaker, so "load more" can't skip or duplicate rows at a page boundary.
+   */
+  async findAll(
+    userId: string,
+    role: string,
+    opts: {
+      limit?: string
+      cursor?: string
+      status?: 'new' | 'active' | 'closed'
+      assignedTo?: string      // uuid | 'unassigned'
+      dateFrom?: string
+      dateTo?: string
+      q?: string
+    } = {},
+  ): Promise<{ items: any[]; nextCursor: string | null }> {
+    const limit = Math.min(Math.max(parseInt(opts.limit ?? '30', 10) || 30, 1), 100)
+    const sortKey = sql`coalesce(${schema.chats.lastMessageAt}, ${schema.chats.createdAt})`
+
+    const conds: any[] = []
+
+    // Managers are scoped to their own chats; admins see everything.
+    if (role === 'manager') {
+      conds.push(eq(schema.chats.assignedTo, userId))
+    } else if (opts.assignedTo === 'unassigned') {
+      conds.push(isNull(schema.chats.assignedTo))
+    } else if (opts.assignedTo) {
+      conds.push(eq(schema.chats.assignedTo, opts.assignedTo))
+    }
+
+    if (opts.status) conds.push(eq(schema.chats.status, opts.status))
+    if (opts.dateFrom) conds.push(sql`${sortKey} >= ${new Date(opts.dateFrom)}`)
+    if (opts.dateTo) conds.push(sql`${sortKey} <= ${new Date(opts.dateTo)}`)
+
+    const q = opts.q?.trim()
+    if (q) {
+      const like = `%${q}%`
+      conds.push(or(
+        ilike(schema.clients.firstName, like),
+        ilike(schema.clients.lastName, like),
+        ilike(schema.clients.username, like),
+        sql`EXISTS (SELECT 1 FROM ${schema.messages} m WHERE m.chat_id = ${schema.chats.id} AND m.content->>'text' ILIKE ${like})`,
+      ))
+    }
+
+    if (opts.cursor) {
+      const [skMs, id] = opts.cursor.split('_')
+      const ts = new Date(Number(skMs))
+      conds.push(sql`(${sortKey} < ${ts} OR (${sortKey} = ${ts} AND ${schema.chats.id} < ${id}::uuid))`)
+    }
+
+    // Page of ordered chat IDs (join clients so name/username search can match).
+    const rows = await this.db
+      .select({ id: schema.chats.id, sk: sortKey })
+      .from(schema.chats)
+      .innerJoin(schema.clients, eq(schema.clients.id, schema.chats.clientId))
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(sortKey), desc(schema.chats.id))
+      .limit(limit)
+
+    if (rows.length === 0) return { items: [], nextCursor: null }
+
+    // Hydrate with relations, preserving the page order.
+    const ids = rows.map((r) => r.id)
+    const full = await this.db.query.chats.findMany({
+      where: (c, { inArray }) => inArray(c.id, ids),
       with: {
         client: true,
         assignedUser: { columns: { id: true, firstName: true, username: true } },
       },
-      orderBy: (c, { desc }) => desc(c.lastMessageAt),
     })
+    const byId = new Map(full.map((c) => [c.id, c]))
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean) as typeof full
 
-    if (chats.length === 0) return []
-
-    // Fetch the last message per chat in parallel for the list preview
     const lastMessages = await Promise.all(
-      chats.map((chat) =>
+      ordered.map((chat) =>
         this.db.query.messages.findFirst({
           where: (m, { eq }) => eq(m.chatId, chat.id),
           orderBy: (m, { desc }) => desc(m.createdAt),
         }),
       ),
     )
+    const items = ordered.map((chat, i) => ({ ...chat, lastMessage: lastMessages[i] ?? null }))
 
-    return chats.map((chat, i) => ({ ...chat, lastMessage: lastMessages[i] ?? null }))
+    const tail = rows[rows.length - 1]!
+    const nextCursor = rows.length === limit
+      ? `${new Date(tail.sk as string | Date).getTime()}_${tail.id}`
+      : null
+
+    return { items, nextCursor }
   }
 
   async findOne(chatId: string) {
@@ -824,7 +903,9 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       lastMessage: message,
     })
 
-    return { ...message, status: chat.status === 'closed' ? 'active' : message.status }
+    // The message keeps its own delivery status ('sending'); the chat reopen
+    // (closed → active) is communicated separately via emitChatUpdated above.
+    return message
   }
 
   async markRead(chatId: string) {

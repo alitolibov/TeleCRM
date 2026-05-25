@@ -1,6 +1,14 @@
-import { useQuery, useMutation } from '@tanstack/vue-query'
+import { useMutation } from '@tanstack/vue-query'
 import { storeToRefs } from 'pinia'
 import type { Chat, ChatMessage, ChatClient } from '~/stores/chats'
+
+export interface ChatListFilters {
+  status: '' | 'new' | 'active' | 'closed'
+  assignedTo: string          // '' = all, 'unassigned', or a manager uuid (admin only)
+  q: string
+}
+
+interface ChatPage { items: Chat[]; nextCursor: string | null }
 
 export type ClientStatus = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
 
@@ -40,14 +48,63 @@ export function useChats() {
   const { chats, activeChat, messages } = storeToRefs(store)
   const { on, off, emit } = useSocket()
 
-  const { isLoading: loading, refetch: refetchChats } = useQuery({
-    queryKey: ['chats'],
-    queryFn: async () => {
-      const data = await api<Chat[]>('/chats')
-      store.setChats(data)
-      return data
-    },
+  // === Paginated, filterable chat list (spec 5.1–5.2) ===
+  const loading = ref(true)
+  const loadingMore = ref(false)
+  const nextCursor = ref<string | null>(null)
+  const hasMore = computed(() => nextCursor.value !== null)
+
+  const filters = reactive<ChatListFilters>({
+    status: '', assignedTo: '', q: '',
   })
+
+  function buildListQuery(cursor?: string | null): string {
+    const p = new URLSearchParams({ limit: '30' })
+    if (cursor) p.set('cursor', cursor)
+    if (filters.status) p.set('status', filters.status)
+    if (filters.assignedTo) p.set('assignedTo', filters.assignedTo)
+    const q = filters.q.trim()
+    if (q) p.set('q', q)
+    return p.toString()
+  }
+
+  async function loadChats() {
+    loading.value = true
+    try {
+      const res = await api<ChatPage>(`/chats?${buildListQuery()}`)
+      store.setChats(res.items)
+      nextCursor.value = res.nextCursor
+    } catch (e) {
+      console.error('[chats] load failed', e)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function loadMoreChats() {
+    if (!nextCursor.value || loadingMore.value) return
+    loadingMore.value = true
+    try {
+      const res = await api<ChatPage>(`/chats?${buildListQuery(nextCursor.value)}`)
+      store.appendChats(res.items)
+      nextCursor.value = res.nextCursor
+    } catch (e) {
+      console.error('[chats] load-more failed', e)
+    } finally {
+      loadingMore.value = false
+    }
+  }
+
+  // Reload (back to page 1) when any filter/search changes — debounced so typing
+  // in the search box doesn't fire a request per keystroke.
+  let filterTimer: ReturnType<typeof setTimeout> | null = null
+  watch(filters, () => {
+    if (filterTimer) clearTimeout(filterTimer)
+    filterTimer = setTimeout(loadChats, 300)
+  }, { deep: true })
+
+  // Initial load.
+  loadChats()
 
   async function openChat(id: string) {
     const chat = await api<Chat>(`/chats/${id}`)
@@ -148,7 +205,7 @@ export function useChats() {
 
     async function fullRefetch(reason: string) {
       console.log(`[realtime] full refetch — ${reason}`)
-      try { await refetchChats() } catch (e) { console.error(e) }
+      try { await loadChats() } catch (e) { console.error(e) }
       const activeId = store.activeChat?.id
       if (activeId) {
         try {
@@ -176,14 +233,18 @@ export function useChats() {
       }
     }
 
-    const onChatUpdated = (data: any) => {
+    const onChatUpdated = async (data: any) => {
       console.log('[ws] ← chat:updated', { id: data.id, fields: Object.keys(data) })
-      // Fallback: chat may not be in our local list (e.g. we missed `chat:new`
-      // while WS was reconnecting). Refetch the whole list so we don't lose it.
+      // Chat not in the loaded window: it was just auto-assigned to us, or it
+      // moved up from a later page on new activity. Fetch that one chat and let
+      // the store place it on top (don't reload the whole paginated list — that
+      // would yank the user back to page 1 on every off-page update).
       const known = store.chats.some(c => c.id === data.id)
       if (!known) {
-        console.warn('[ws] chat:updated for unknown chat → refetching list', data.id)
-        refetchChats().catch(() => {})
+        try {
+          const chat = await api<Chat>(`/chats/${data.id}`)
+          store.handleNewChat(chat)
+        } catch { /* ignore — surfaces on next reload/poll */ }
         return
       }
       store.handleChatUpdated(data)
@@ -194,6 +255,7 @@ export function useChats() {
     }
     const onMessageEdited = (payload: any) => store.handleMessageEdited(payload)
     const onMessagesDeleted = (payload: any) => store.handleMessagesDeleted(payload)
+    const onMessageStatus = (payload: any) => store.handleMessageStatus(payload)
 
     // Layer 2 — reconnect catch-up
     const onConnect = () => {
@@ -217,6 +279,7 @@ export function useChats() {
     on('chat:new', onNewChat)
     on('message:edited', onMessageEdited)
     on('message:deleted', onMessagesDeleted)
+    on('message:status', onMessageStatus)
     document.addEventListener('visibilitychange', onVisibility)
 
     onUnmounted(() => {
@@ -228,6 +291,7 @@ export function useChats() {
       off('chat:new', onNewChat)
       off('message:edited', onMessageEdited)
       off('message:deleted', onMessagesDeleted)
+      off('message:status', onMessageStatus)
       document.removeEventListener('visibilitychange', onVisibility)
     })
   }
@@ -247,6 +311,11 @@ export function useChats() {
     activeChat,
     messages,
     loading,
+    loadingMore,
+    hasMore,
+    filters,
+    loadChats,
+    loadMoreChats,
     openChat,
     loadOlder,
     sendMessage,

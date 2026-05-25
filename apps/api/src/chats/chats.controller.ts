@@ -24,6 +24,7 @@ import { ChatsService } from './chats.service'
 import { SendMessageDto } from './dto/send-message.dto'
 import { CloseChatDto } from './dto/close-chat.dto'
 import { EditMessageDto } from './dto/edit-message.dto'
+import { ListChatsDto } from './dto/list-chats.dto'
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -31,8 +32,11 @@ export class ChatsController {
   constructor(private readonly chatsService: ChatsService) {}
 
   @Get()
-  findAll(@CurrentUser() user: { id: string; role: string }) {
-    return this.chatsService.findAll(user.id, user.role)
+  findAll(
+    @CurrentUser() user: { id: string; role: string },
+    @Query() query: ListChatsDto,
+  ) {
+    return this.chatsService.findAll(user.id, user.role, query)
   }
 
   @Get(':id')

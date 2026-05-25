@@ -16,6 +16,8 @@ export interface ChatMessage {
   contentType: string
   content: any
   isRead: boolean
+  /** Delivery state for outgoing messages: queued → confirmed by Telegram. */
+  status?: 'sending' | 'sent' | 'failed'
   createdAt: string
   editedAt?: string | null
   replyToTgId?: number | null
@@ -55,6 +57,13 @@ export const useChatsStore = defineStore('chats', () => {
   }
 
   function setChats(data: Chat[]) { chats.value = data }
+
+  /** Append the next page of chats (load-more), skipping any already present. */
+  function appendChats(data: Chat[]) {
+    const seen = new Set(chats.value.map(c => c.id))
+    const fresh = data.filter(c => !seen.has(c.id))
+    if (fresh.length) chats.value = [...chats.value, ...fresh]
+  }
 
   function setActiveChat(chat: Chat) {
     activeChat.value = chat
@@ -136,6 +145,17 @@ export const useChatsStore = defineStore('chats', () => {
     )
   }
 
+  /** Outgoing message confirmed (or failed) by Telegram — flip its delivery state. */
+  function handleMessageStatus(payload: { id: string; chatId: string; status: 'sending' | 'sent' | 'failed'; telegramMessageId?: number }) {
+    const idx = messages.value.findIndex(m => m.id === payload.id)
+    if (idx === -1) return
+    messages.value = messages.value.map((m, i) =>
+      i === idx
+        ? { ...m, status: payload.status, ...(payload.telegramMessageId ? { telegramMessageId: payload.telegramMessageId } : {}) }
+        : m,
+    )
+  }
+
   function handleMessagesDeleted(payload: { ids: string[] }) {
     const setIds = new Set(payload.ids)
     messages.value = messages.value.filter(m => !setIds.has(m.id))
@@ -155,9 +175,9 @@ export const useChatsStore = defineStore('chats', () => {
 
   return {
     chats, activeChat, messages, totalUnread,
-    setChats, setActiveChat, markActiveChatRead,
+    setChats, appendChats, setActiveChat, markActiveChatRead,
     handleNewMessage, handleChatUpdated, handleNewChat,
-    handleMessageEdited, handleMessagesDeleted,
+    handleMessageEdited, handleMessagesDeleted, handleMessageStatus,
     addMessage, prependMessages,
   }
 })

@@ -4,7 +4,11 @@
       :chats="chats"
       :active-id="activeChat?.id ?? null"
       :loading="loading"
+      :loading-more="loadingMore"
+      :has-more="hasMore"
+      :filters="filters"
       @select="handleOpenChat"
+      @load-more="loadMoreChats"
     />
 
     <!-- ============ Chat Area ============ -->
@@ -176,7 +180,7 @@ import { formatDay } from '~/utils/format'
 definePageMeta({ middleware: 'auth' })
 
 const {
-  chats, activeChat, messages, loading,
+  chats, activeChat, messages, loading, loadingMore, hasMore, filters, loadMoreChats,
   openChat, loadOlder, sendMessage, editMessage, deleteMessage,
   assignChat, closeChat, reopenChat, loadClientInfo, setupRealtime,
 } = useChats()
