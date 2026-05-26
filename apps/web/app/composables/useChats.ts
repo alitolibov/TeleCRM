@@ -122,19 +122,27 @@ export function useChats() {
   }
 
   /**
-   * Scroll-up pagination — fetches messages older than what's currently loaded.
-   * Pulls from DB only (no Telegram backfill): all messages flow in via real-time
-   * starting from the moment the chat is created in CRM.
+   * Scroll-up pagination. First serves older messages already in the DB; once
+   * those are exhausted it backfills from Telegram (getChatHistory) so the
+   * manager can see the full prior conversation — even messages from before the
+   * client was ever in the CRM.
    */
   async function loadOlder(chatId: string): Promise<number> {
     const oldest = store.messages[0]
     if (!oldest) return 0
     try {
+      // 1. Older messages already stored locally.
       const older = await api<ChatMessage[]>(
         `/chats/${chatId}/messages?before=${encodeURIComponent(oldest.createdAt)}`,
       )
-      // getMessages returns DESC, we want ascending in the array
-      return store.prependMessages(older.reverse())
+      if (older.length > 0) return store.prependMessages(older.reverse())
+
+      // 2. DB exhausted → pull older history from Telegram (returns oldest→newest).
+      const synced = await api<ChatMessage[]>(
+        `/chats/${chatId}/sync-history?before=${oldest.telegramMessageId}&limit=50`,
+        { method: 'POST' },
+      )
+      return store.prependMessages(synced)
     } catch {
       return 0
     }

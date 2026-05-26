@@ -269,6 +269,15 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    // 8. Brand-new chat → pull the recent prior conversation from Telegram in the
+    // background, so the manager sees the full history (incl. messages from before
+    // the client was ever in the CRM), not just this one message.
+    if (isNewChat) {
+      this.syncHistory(chat.id, 0, 50)
+        .then((n) => console.log(`[api] backfilled ${n.length} history msg(s) for new chat ${chat.id}`))
+        .catch((e) => console.error('[api] history backfill failed:', e?.message))
+    }
+
     return { client, chat, message }
   }
 
