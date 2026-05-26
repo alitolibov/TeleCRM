@@ -12,13 +12,16 @@
         <span v-if="time" class="voice-time">{{ time }}</span>
       </div>
     </div>
+    <button class="voice-speed" type="button" title="Скорость воспроизведения" @click="cycleSpeed">
+      {{ speedLabel }}
+    </button>
     <audio
       ref="audio"
       :src="src"
       preload="metadata"
       @loadedmetadata="onLoaded"
       @timeupdate="onTimeUpdate"
-      @ended="playing = false"
+      @ended="onEnded"
     />
   </div>
 </template>
@@ -36,6 +39,21 @@ const playing = ref(false)
 const currentTime = ref(0)
 const audioDuration = ref(0)
 
+// Shared across the app: remembered speed + single-active-playback (like Telegram).
+const { speed, cycleSpeed, setActive, clearActive } = useVoiceAudio()
+const speedLabel = computed(() => (speed.value === 1.5 ? '1,5×' : `${speed.value}×`))
+
+// Stable identity so the shared store can stop exactly this player.
+function stop() {
+  if (audio.value) audio.value.pause()
+  playing.value = false
+}
+
+// A speed change while playing should take effect immediately.
+watch(speed, (v) => {
+  if (audio.value) audio.value.playbackRate = v
+})
+
 const progress = computed(() => {
   const d = props.duration || audioDuration.value
   if (!d) return 0
@@ -48,16 +66,26 @@ function toggle() {
   if (playing.value) {
     el.pause()
     playing.value = false
+    clearActive(stop)
   } else {
+    setActive(stop)   // stops whichever voice was playing before
+    el.playbackRate = speed.value
     void el.play().then(() => { playing.value = true }).catch(() => {})
   }
 }
 
 function onLoaded() {
-  if (audio.value) audioDuration.value = audio.value.duration || 0
+  if (audio.value) {
+    audioDuration.value = audio.value.duration || 0
+    audio.value.playbackRate = speed.value
+  }
 }
 function onTimeUpdate() {
   if (audio.value) currentTime.value = audio.value.currentTime
+}
+function onEnded() {
+  playing.value = false
+  clearActive(stop)
 }
 function seek(e: MouseEvent) {
   const el = audio.value
@@ -82,8 +110,8 @@ function formatTime(s: number): string {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 220px;
-  max-width: 280px;
+  min-width: 240px;
+  max-width: 300px;
 }
 .voice-play {
   width: 36px;
@@ -130,4 +158,28 @@ function formatTime(s: number): string {
   opacity: 0.7;
 }
 .voice-time { opacity: 0.85; }
+
+/* Speed toggle pill */
+.voice-speed {
+  flex-shrink: 0;
+  align-self: center;
+  min-width: 34px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: filter 0.1s;
+}
+.voice-in .voice-speed {
+  background: color-mix(in srgb, var(--p-primary-color) 14%, transparent);
+  color: var(--p-primary-color);
+}
+.voice-out .voice-speed {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+.voice-speed:hover { filter: brightness(1.1); }
 </style>

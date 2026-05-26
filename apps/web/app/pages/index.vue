@@ -206,6 +206,7 @@ const closeChatOpen = ref(false)
 const closeChatSaving = ref(false)
 const composerText = ref('')
 const uploading = ref(false)
+const toast = useToast()
 
 // Files queued in the composer before sending (Telegram-style preview tray).
 const attachments = useAttachments()
@@ -297,11 +298,14 @@ async function handleSend() {
   withGuard(activeChat.value, 'отправить сообщение', () => doDispatch(body, replyTargetId))
 }
 
-/** Sends queued attachments (if any) and/or the text body, then resets the composer. */
+/** Sends queued attachments (if any) and/or the text body, then resets the composer.
+ *  The composer is only cleared on success — a failed upload keeps the text +
+ *  attachments so the user can retry instead of silently losing them. */
 async function doDispatch(body: string, replyTo?: string) {
   const files = attachments.items.value
   if (files.length > 0) {
-    await doUpload(files.map(a => a.file), body)
+    const ok = await doUpload(files.map(a => a.file), body)
+    if (!ok) return
   } else if (body) {
     await sendMessage(body, replyTo)
   }
@@ -313,8 +317,9 @@ async function doDispatch(body: string, replyTo?: string) {
 }
 
 /** Upload all queued files in one request — the API groups photos/videos into
- *  a Telegram album and sends documents individually. Caption goes on the first. */
-async function doUpload(files: File[], caption: string) {
+ *  a Telegram album and sends documents individually. Caption goes on the first.
+ *  Returns true on success; on failure shows a toast and keeps the composer intact. */
+async function doUpload(files: File[], caption: string): Promise<boolean> {
   uploading.value = true
   try {
     const { api } = useApi()
@@ -324,6 +329,16 @@ async function doUpload(files: File[], caption: string) {
     await api(`/chats/${activeChat.value!.id}/upload`, { method: 'POST', body: form })
     await nextTick()
     scrollToBottom()
+    return true
+  } catch (e) {
+    console.error('[chats] upload failed', e)
+    toast.add({
+      severity: 'error',
+      summary: 'Не удалось отправить файл',
+      detail: 'Попробуйте ещё раз. Файл остался в поле ввода.',
+      life: 5000,
+    })
+    return false
   } finally {
     uploading.value = false
   }

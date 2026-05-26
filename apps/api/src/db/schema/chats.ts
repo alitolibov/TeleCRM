@@ -12,6 +12,8 @@ export const chats = pgTable('chats', {
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   firstResponseAt: timestamp('first_response_at', { withTimezone: true }),
   closedAt: timestamp('closed_at', { withTimezone: true }),
+  /** When the prior Telegram history was backfilled (null = not yet pulled). */
+  historySyncedAt: timestamp('history_synced_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

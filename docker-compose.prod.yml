@@ -60,6 +60,7 @@ services:
       TG_PHONE_NUMBER: ${TG_PHONE_NUMBER}
     volumes:
       - tdlib_data:/data            # TDLib binlog + downloaded media
+      - uploads_data:/tmp/telecrm-uploads   # read files the API saved here to send via TDLib
     stdin_open: true                # required for interactive SMS-code prompt on first run
     tty: true
 

@@ -147,10 +147,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }
 
     // 4. Insert message (ON CONFLICT DO NOTHING — dedup by telegramMessageId)
-    // Map TgMessageContent.type → DB enum (some shared variants don't have
-    // their own enum value, like 'videoNote' which falls under 'video').
-    const contentType: schema.ContentType =
-      event.content.type === 'videoNote' ? 'video' : (event.content.type as schema.ContentType)
+    const contentType = this.toContentType(event.content.type)
     const isNewChat = !chat.lastMessageAt
     const senderType = event.isOutgoing ? 'manager' : 'client'
 
@@ -269,16 +266,18 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // 8. Brand-new chat → pull the recent prior conversation from Telegram in the
-    // background, so the manager sees the full history (incl. messages from before
-    // the client was ever in the CRM), not just this one message.
-    if (isNewChat) {
-      this.syncHistory(chat.id, 0, 50)
-        .then((n) => console.log(`[api] backfilled ${n.length} history msg(s) for new chat ${chat.id}`))
-        .catch((e) => console.error('[api] history backfill failed:', e?.message))
-    }
-
     return { client, chat, message }
+  }
+
+  /**
+   * Map a TgMessageContent.type to the DB content_type enum. Some shared variants
+   * have no own enum value ('videoNote' → 'video'); the full type is preserved in
+   * the JSONB content so the UI still renders it correctly. Unknown → 'unsupported'.
+   */
+  private toContentType(type: string): schema.ContentType {
+    if (type === 'videoNote') return 'video'
+    const valid = ['text', 'photo', 'video', 'voice', 'document', 'sticker', 'unsupported']
+    return (valid.includes(type) ? type : 'unsupported') as schema.ContentType
   }
 
   /** One-line preview of a message for notifications / list previews. */
@@ -588,6 +587,14 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     })
     if (!chat) return null
 
+    // First time this chat is opened → backfill the prior Telegram conversation
+    // so the manager sees the full history, not just messages received in the CRM.
+    if (!chat.historySyncedAt) {
+      await this.syncHistory(chatId, 0, 100).catch((e) =>
+        console.error('[api] open-sync history failed:', e?.message),
+      )
+    }
+
     // Fetch the 50 MOST RECENT messages, then reverse to chronological order
     // (oldest at top, newest at bottom — typical chat display).
     const recent = await this.db.query.messages.findMany({
@@ -630,18 +637,31 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     let result: TgHistoryResponse
     try {
-      result = await job.waitUntilFinished(this.historyEvents, 15_000)
+      result = await job.waitUntilFinished(this.historyEvents, 25_000)
     } catch (e) {
       throw new Error(`History sync timed out or failed: ${(e as Error).message}`)
     }
 
-    if (result.messages.length === 0) return []
+    // Mark a full (latest) sync done so we don't refetch on every open — but only
+    // AFTER a successful insert below. An empty result is also "done" (no prior
+    // history). Insert errors throw before the flag is set → retried next open.
+    const markSynced = async () => {
+      if (beforeTgId !== 0) return
+      await this.db.update(schema.chats)
+        .set({ historySyncedAt: new Date() })
+        .where(eq(schema.chats.id, chatId)).catch(() => {})
+    }
+
+    if (result.messages.length === 0) {
+      await markSynced()
+      return []
+    }
 
     const rows = result.messages.map((m) => ({
       chatId: chat.id,
       telegramMessageId: m.messageId,
       senderType: (m.isOutgoing ? 'manager' : 'client') as 'manager' | 'client',
-      contentType: m.content.type as schema.ContentType,
+      contentType: this.toContentType(m.content.type),
       content: m.content,
       isRead: true,
       status: 'sent' as const,
@@ -653,6 +673,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       .values(rows)
       .onConflictDoNothing()
       .returning()
+
+    await markSynced()
 
     // Return all messages from the requested range (inserted + already-existing),
     // sorted oldest → newest so the frontend can prepend in chronological order.
