@@ -105,6 +105,19 @@ async function confirmRevokeSession() {
     await loadSessions()
   } catch (e) { console.error(e) } finally { revokingSession.value = false }
 }
+
+// Log out of all other devices, keeping the current one.
+const revokeOthersOpen = ref(false)
+const revokingOthers = ref(false)
+const otherSessionsCount = computed(() => sessions.value.filter(s => !s.current).length)
+async function confirmRevokeOthers() {
+  revokingOthers.value = true
+  try {
+    await api('/auth/sessions/revoke-others', { method: 'POST' })
+    revokeOthersOpen.value = false
+    await loadSessions()
+  } catch (e) { console.error(e) } finally { revokingOthers.value = false }
+}
 function deviceName(ua: string | null) {
   if (!ua) return 'Неизвестное устройство'
   const os = /Windows/.test(ua) ? 'Windows' : /Mac OS|Macintosh/.test(ua) ? 'macOS'
@@ -302,7 +315,7 @@ onMounted(() => {
           </div>
         </header>
 
-        <div class="flex flex-col gap-2">
+        <div class="sess-list">
           <div v-for="s in sessions" :key="s.id" class="sess-item">
             <i class="pi pi-desktop sess-icon" />
             <div class="flex-1 min-w-0">
@@ -323,6 +336,15 @@ onMounted(() => {
           </div>
           <div v-if="sessions.length === 0" class="text-[13px] text-surface-400 py-2">Нет активных сессий</div>
         </div>
+
+        <button
+          v-if="otherSessionsCount > 0"
+          class="sess-revoke-all"
+          type="button"
+          @click="revokeOthersOpen = true"
+        >
+          <i class="pi pi-sign-out text-[12px]" /> Выйти на остальных устройствах ({{ otherSessionsCount }})
+        </button>
       </section>
 
       <!-- Escalation timeouts (admin only) -->
@@ -389,6 +411,20 @@ onMounted(() => {
       @confirm="confirmRevokeSession"
     >
       Сессия на устройстве <strong>{{ deviceName(revokeSessionTarget?.userAgent ?? null) }}</strong> будет завершена.
+    </BaseConfirmDialog>
+
+    <BaseConfirmDialog
+      :open="revokeOthersOpen"
+      icon="pi pi-sign-out"
+      icon-variant="danger"
+      title="Выйти на остальных устройствах?"
+      confirm-label="Выйти везде"
+      confirm-variant="danger"
+      :loading="revokingOthers"
+      @update:open="(v: boolean) => !v && (revokeOthersOpen = false)"
+      @confirm="confirmRevokeOthers"
+    >
+      Все сессии, кроме текущей ({{ otherSessionsCount }}), будут завершены. Текущее устройство останется в системе.
     </BaseConfirmDialog>
   </div>
 </template>
@@ -465,6 +501,14 @@ onMounted(() => {
 .qr-icon-btn:hover { background: var(--p-surface-200); color: var(--p-surface-800); }
 .qr-icon-danger:hover { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
 
+.sess-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;       /* ~4-5 sessions, then scroll instead of pushing the page */
+  overflow-y: auto;
+  padding-right: 2px;
+}
 .sess-item {
   display: flex;
   align-items: center;
@@ -503,6 +547,21 @@ onMounted(() => {
   transition: background 0.12s;
 }
 .sess-revoke:hover { background: rgba(239, 68, 68, 0.18); }
+.sess-revoke-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.1);
+  transition: background 0.12s;
+}
+.sess-revoke-all:hover { background: rgba(239, 68, 68, 0.18); }
 
 .esc-input {
   width: 84px;

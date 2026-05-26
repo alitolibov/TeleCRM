@@ -82,6 +82,13 @@ export class AuthController {
     await this.authService.revokeSession(user.id, id)
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('sessions/revoke-others')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async revokeOtherSessions(@CurrentUser() user: { id: string }, @Req() req: Request) {
+    await this.authService.revokeOtherSessions(user.id, req.cookies?.[COOKIE_NAME])
+  }
+
   private sanitize(user: User) {
     const { passwordHash: _, ...rest } = user
     return rest

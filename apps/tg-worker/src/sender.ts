@@ -143,6 +143,10 @@ export function setupSender(client: any) {
     {
       connection: buildRedisConnection(),
       concurrency: 1,
+      // Proactive pacing (spec 3.5): at most 1 outgoing message per second so a
+      // burst (quick replies, many chats) can't trip Telegram's flood limits.
+      // FLOOD_WAIT retry above is the reactive safety net on top of this.
+      limiter: { max: 1, duration: 1000 },
     },
   )
 

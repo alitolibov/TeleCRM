@@ -2,7 +2,7 @@ import { Inject, Injectable, UnauthorizedException } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { ConfigService } from '@nestjs/config'
 import { createHash, randomUUID } from 'node:crypto'
-import { and, eq, gt, isNull } from 'drizzle-orm'
+import { and, eq, gt, isNull, ne } from 'drizzle-orm'
 import * as argon2 from 'argon2'
 import { DRIZZLE, type Db } from '../db/drizzle.module'
 import { sessions, users, actionLogs } from '../db/schema'
@@ -93,6 +93,20 @@ export class AuthService {
       createdAt: s.createdAt,
       current: currentHash != null && s.refreshTokenHash === currentHash,
     }))
+  }
+
+  /** Revoke every active session except the current device (spec 11). */
+  async revokeOtherSessions(userId: string, currentRefreshToken?: string) {
+    const currentHash = currentRefreshToken ? hashToken(currentRefreshToken) : null
+    await this.db
+      .update(sessions)
+      .set({ revokedAt: new Date() })
+      .where(and(
+        eq(sessions.userId, userId),
+        isNull(sessions.revokedAt),
+        ...(currentHash ? [ne(sessions.refreshTokenHash, currentHash)] : []),
+      ))
+    return { ok: true }
   }
 
   /** Revoke one of the user's own sessions (ends that device's access on next refresh). */
