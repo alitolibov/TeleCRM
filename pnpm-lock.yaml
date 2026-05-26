@@ -69,6 +69,9 @@ importers:
       drizzle-orm:
         specifier: ^0.38.0
         version: 0.38.4(@types/pg@8.20.0)(pg@8.20.0)
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.10.1
       multer:
         specifier: ^2.1.1
         version: 2.1.1

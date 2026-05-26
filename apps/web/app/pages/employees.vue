@@ -239,6 +239,8 @@ function colorFromString(s: string): string {
   max-width: 1100px;
   margin: 0 auto;
   width: 100%;
+  height: 100%;
+  overflow-y: auto;
 }
 .emp-header {
   display: flex;

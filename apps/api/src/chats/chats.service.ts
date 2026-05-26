@@ -360,7 +360,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    * Returns null if no one is online. Ties broken by user.id (stable but
    * arbitrary) — sufficient for now; can swap to round-robin later.
    */
-  async pickAssignee(): Promise<string | null> {
+  async pickAssignee(excludeUserId?: string): Promise<string | null> {
     const online = await this.db.query.users.findMany({
       where: (u, { eq, and, isNull }) => and(
         eq(u.status, 'online'),
@@ -368,7 +368,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       ),
       columns: { id: true },
     })
-    if (online.length === 0) return null
+    const candidates = excludeUserId ? online.filter(u => u.id !== excludeUserId) : online
+    if (candidates.length === 0) return null
 
     const counts = await this.db.execute<{ user_id: string; cnt: string }>(sql`
       SELECT assigned_to as user_id, COUNT(*)::text as cnt
@@ -380,7 +381,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     let bestId: string | null = null
     let bestCount = Infinity
-    for (const u of online) {
+    for (const u of candidates) {
       const c = countByUser.get(u.id) ?? 0
       if (c < bestCount) { bestCount = c; bestId = u.id }
     }
@@ -484,6 +485,88 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       : null
 
     return { items, nextCursor }
+  }
+
+  /**
+   * Saved close-results view (spec 18): closed chats with their captured result,
+   * filterable by client status / manager / close-date and searchable across
+   * flight, dates, amount and comment. Managers see only their own.
+   */
+  async searchResults(
+    userId: string,
+    role: string,
+    opts: {
+      clientStatus?: string
+      assignedTo?: string
+      dateFrom?: string
+      dateTo?: string
+      q?: string
+      limit?: string
+    } = {},
+  ) {
+    const limit = Math.min(Math.max(parseInt(opts.limit ?? '100', 10) || 100, 1), 200)
+    const conds: any[] = []
+
+    if (role === 'manager') conds.push(eq(schema.chats.assignedTo, userId))
+    else if (opts.assignedTo) conds.push(eq(schema.chats.assignedTo, opts.assignedTo))
+
+    if (opts.clientStatus) conds.push(eq(schema.chatResults.clientStatus, opts.clientStatus as any))
+    if (opts.dateFrom) conds.push(sql`${schema.chatResults.updatedAt} >= ${new Date(opts.dateFrom)}`)
+    if (opts.dateTo) conds.push(sql`${schema.chatResults.updatedAt} <= ${new Date(opts.dateTo)}`)
+
+    const q = opts.q?.trim()
+    if (q) {
+      const like = `%${q}%`
+      conds.push(or(
+        ilike(schema.chatResults.flight, like),
+        ilike(schema.chatResults.dates, like),
+        ilike(schema.chatResults.comment, like),
+        sql`${schema.chatResults.amount}::text ILIKE ${like}`,
+      ))
+    }
+
+    const rows = await this.db
+      .select({
+        chatId: schema.chats.id,
+        status: schema.chats.status,
+        clientFirstName: schema.clients.firstName,
+        clientLastName: schema.clients.lastName,
+        clientUsername: schema.clients.username,
+        clientTelegramId: schema.clients.telegramId,
+        clientStatus: schema.chatResults.clientStatus,
+        flight: schema.chatResults.flight,
+        dates: schema.chatResults.dates,
+        amount: schema.chatResults.amount,
+        comment: schema.chatResults.comment,
+        closedAt: schema.chatResults.updatedAt,
+        managerId: schema.users.id,
+        managerName: schema.users.firstName,
+      })
+      .from(schema.chatResults)
+      .innerJoin(schema.chats, eq(schema.chats.id, schema.chatResults.chatId))
+      .innerJoin(schema.clients, eq(schema.clients.id, schema.chats.clientId))
+      .leftJoin(schema.users, eq(schema.users.id, schema.chats.assignedTo))
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(schema.chatResults.updatedAt))
+      .limit(limit)
+
+    return rows.map((r) => ({
+      chatId: r.chatId,
+      status: r.status,
+      client: {
+        firstName: r.clientFirstName,
+        lastName: r.clientLastName,
+        username: r.clientUsername,
+        telegramId: r.clientTelegramId,
+      },
+      manager: r.managerId ? { id: r.managerId, firstName: r.managerName } : null,
+      clientStatus: r.clientStatus,
+      flight: r.flight,
+      dates: r.dates,
+      amount: r.amount,
+      comment: r.comment,
+      closedAt: r.closedAt,
+    }))
   }
 
   async findOne(chatId: string) {
@@ -643,9 +726,8 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       if (toUserId === fromUserId) throw new BadRequestException('Чат уже у этого сотрудника')
     }
 
-    // Either way the chat becomes 'new' so the recipient (or the queue) sees it
-    // as a fresh chat to take into work — on reassign the owner is the target,
-    // on queue-return the owner is cleared.
+    // The chat becomes 'new' so the recipient (or queue) sees it as fresh.
+    // On reassign the owner is the target; on queue-return the owner is cleared.
     await this.db.update(schema.chats).set(
       toUserId
         ? { assignedTo: toUserId, status: 'new', updatedAt: new Date() }
@@ -666,6 +748,28 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       metadata: { from: fromUserId, to: toUserId, comment: note, mode: toUserId ? 'reassign' : 'queue' },
     })
 
+    // Returning to the queue → try to hand it to another available employee
+    // (excluding the person who just released it, so it doesn't bounce back).
+    // If nobody else is online, it stays in the queue until someone comes online.
+    let recipientId: string | null = toUserId
+    let autoAssigned = false
+    if (!toUserId) {
+      const auto = await this.pickAssignee(actorId)
+      if (auto) {
+        recipientId = auto
+        autoAssigned = true
+        await this.db.update(schema.chats)
+          .set({ assignedTo: auto, updatedAt: new Date() })
+          .where(eq(schema.chats.id, chatId))
+        await this.db.insert(schema.actionLogs).values({
+          action: 'chat_assigned',
+          actorId: null,
+          chatId,
+          metadata: { to: auto, reason: 'auto_distribute_on_return' },
+        })
+      }
+    }
+
     // System note in the timeline — the recipient sees the comment in context.
     const fromUser = fromUserId
       ? await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, fromUserId), columns: { firstName: true } })
@@ -673,7 +777,9 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     const fromName = fromUser?.firstName ?? null
     const text = toUserId
       ? `🔄 Чат передан${fromName ? ` от ${fromName}` : ''}: ${note}`
-      : `↩️ Чат возвращён в очередь${fromName ? ` (${fromName})` : ''}: ${note}`
+      : autoAssigned
+        ? `↩️ Чат возвращён в очередь${fromName ? ` (${fromName})` : ''} и передан другому сотруднику: ${note}`
+        : `↩️ Чат возвращён в очередь${fromName ? ` (${fromName})` : ''}: ${note}`
     const [sysMsg] = await this.db.insert(schema.messages).values({
       chatId,
       telegramMessageId: Date.now(),
@@ -699,13 +805,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     })
     this.gateway?.emitNewMessage(chatId, { ...sysMsg, client: chat.client })
 
-    // Notify the receiving employee (spec 10.2: "Чат передан менеджеру").
-    if (toUserId) {
+    // Notify whoever ended up with the chat (direct recipient or auto-assigned).
+    if (recipientId) {
       const clientName = [chat.client.firstName, chat.client.lastName].filter(Boolean).join(' ') || 'Клиент'
       const title = `Вам передали чат: ${clientName}`
-      this.notifications?.sendToUser(toUserId, { title, body: note, chatId, tag: chatId, force: true }).catch(() => {})
+      this.notifications?.sendToUser(recipientId, { title, body: note, chatId, tag: chatId, force: true }).catch(() => {})
       // In-app notification (center + toast) — reliable regardless of OS push.
-      this.gateway?.emitToUsers([toUserId], 'notify', { type: 'transfer', title, body: note, chatId })
+      this.gateway?.emitToUsers([recipientId], 'notify', { type: 'transfer', title, body: note, chatId })
     }
 
     return updated
@@ -1047,9 +1153,11 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         metadata: { from: chat.assignedTo, to: senderId, reason: 'admin_reply' },
       })
     }
+    // Stamp the first manager reply so reports can measure response time.
+    const firstResponse = chat.firstResponseAt == null ? { firstResponseAt: message.createdAt } : {}
     await this.db
       .update(schema.chats)
-      .set({ ...statusUpdate, ...ownerUpdate, lastMessageAt: message.createdAt, updatedAt: new Date() })
+      .set({ ...statusUpdate, ...ownerUpdate, ...firstResponse, lastMessageAt: message.createdAt, updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
 
     // Manager engaged → mark everything before this as read (clears unread badge
@@ -1229,9 +1337,10 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         metadata: { from: chat.assignedTo, to: senderId, reason: 'admin_reply' },
       })
     }
+    const firstResponse = chat.firstResponseAt == null ? { firstResponseAt: new Date() } : {}
     await this.db
       .update(schema.chats)
-      .set({ ...statusUpdate, ...ownerUpdate, lastMessageAt: new Date(), updatedAt: new Date() })
+      .set({ ...statusUpdate, ...ownerUpdate, ...firstResponse, lastMessageAt: new Date(), updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
 
     // Manager engaged → clear unread + Telegram read receipts.

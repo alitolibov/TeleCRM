@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ChatMessage } from '~/stores/chats'
 import type { Attachment } from '~/composables/useAttachments'
+import type { QuickReply } from '~/composables/useQuickReplies'
 
 const props = defineProps<{
   modelValue: string                   // v-model for text
@@ -86,6 +87,49 @@ function onSend() {
   emit('send')
 }
 
+// === Quick replies (spec 19.4): "/" in the input opens a template picker ===
+const { items: quickReplies, load: loadQuickReplies } = useQuickReplies()
+onMounted(() => loadQuickReplies())
+
+const qrDismissed = ref(false)
+const qrIndex = ref(0)
+
+// The "/command" is only active on a single leading-slash line (not while editing).
+const qrQuery = computed(() => {
+  if (isEditing.value) return null
+  const t = props.modelValue
+  if (!t.startsWith('/') || t.includes('\n')) return null
+  return t.slice(1).toLowerCase().trim()
+})
+const qrMatches = computed(() =>
+  qrQuery.value === null ? [] : quickReplies.value.filter(r => r.name.toLowerCase().includes(qrQuery.value!)),
+)
+const qrOpen = computed(() => !qrDismissed.value && qrQuery.value !== null && qrMatches.value.length > 0)
+
+watch(qrMatches, () => { qrIndex.value = 0 })
+watch(() => props.modelValue, () => { qrDismissed.value = false })
+
+/** Selecting a template sends its body immediately — no intermediate editing. */
+function applyQuickReply(r: QuickReply) {
+  text.value = r.body
+  qrDismissed.value = true
+  nextTick(() => emit('send'))
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (qrOpen.value) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); qrIndex.value = (qrIndex.value + 1) % qrMatches.value.length; return }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); qrIndex.value = (qrIndex.value - 1 + qrMatches.value.length) % qrMatches.value.length; return }
+    if (e.key === 'Enter')     { e.preventDefault(); const r = qrMatches.value[qrIndex.value]; if (r) applyQuickReply(r); return }
+    if (e.key === 'Escape')    { e.preventDefault(); qrDismissed.value = true; return }
+  }
+  // Plain Enter sends; Shift/Ctrl/Cmd/Alt+Enter inserts a newline.
+  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault()
+    onSend()
+  }
+}
+
 function focusTextarea() {
   const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
   ta?.focus()
@@ -99,7 +143,22 @@ defineExpose({
 </script>
 
 <template>
-  <div>
+  <div class="composer-wrap">
+    <!-- Quick-reply picker (spec 19.4) — opens above the input when typing "/" -->
+    <div v-if="qrOpen" class="qr-menu">
+      <button
+        v-for="(r, i) in qrMatches" :key="r.id"
+        type="button"
+        class="qr-item"
+        :class="{ 'qr-item-active': i === qrIndex }"
+        @mousedown.prevent="applyQuickReply(r)"
+        @mouseenter="qrIndex = i"
+      >
+        <span class="qr-name">/{{ r.name }}</span>
+        <span class="qr-body">{{ r.body }}</span>
+      </button>
+    </div>
+
     <!-- Edit indicator strip -->
     <div v-if="editingMessage" class="edit-indicator">
       <i class="pi pi-pencil" />
@@ -186,7 +245,7 @@ defineExpose({
           unstyled
           class="composer-textarea"
           @paste="onPaste"
-          @keydown.enter.exact.prevent="onSend"
+          @keydown="onKeydown"
         />
       </div>
       <button
@@ -200,3 +259,43 @@ defineExpose({
     </div>
   </div>
 </template>
+
+<style scoped>
+.composer-wrap { position: relative; }
+
+/* Quick-reply picker floating above the input */
+.qr-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 12px;
+  margin-bottom: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--p-surface-0);
+  border: 1px solid var(--divider);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
+  z-index: 20;
+}
+.qr-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background 0.1s;
+}
+.qr-item-active { background: var(--p-surface-100); }
+.qr-name { font-size: 13px; font-weight: 700; color: var(--p-primary-color); }
+.qr-body {
+  font-size: 12.5px;
+  color: var(--p-surface-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>

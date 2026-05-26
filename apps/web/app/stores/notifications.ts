@@ -1,4 +1,4 @@
-export type AppNotificationType = 'escalation' | 'transfer'
+export type AppNotificationType = 'escalation' | 'transfer' | 'system'
 
 export interface AppNotification {
   id: string

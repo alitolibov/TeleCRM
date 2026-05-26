@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import BaseButton from '~/components/BaseButton.vue'
+import BaseInput from '~/components/BaseInput.vue'
+import BaseTextarea from '~/components/BaseTextarea.vue'
+import BaseConfirmDialog from '~/components/BaseConfirmDialog.vue'
 
 definePageMeta({ middleware: 'auth' })
 
@@ -47,6 +50,74 @@ function onSoundToggle(next: boolean) {
   if (next) playSound()
 }
 
+// === Quick replies (spec 19) — personal templates for everyone ===
+const { items: qrItems, load: qrLoad, create: qrCreate, update: qrUpdate, remove: qrRemove } = useQuickReplies()
+const qrForm = ref<{ id: string | null; name: string; body: string }>({ id: null, name: '', body: '' })
+const qrFormOpen = ref(false)
+const qrSaving = ref(false)
+
+function qrStartCreate() {
+  qrForm.value = { id: null, name: '', body: '' }
+  qrFormOpen.value = true
+}
+function qrStartEdit(r: { id: string; name: string; body: string }) {
+  qrForm.value = { id: r.id, name: r.name, body: r.body }
+  qrFormOpen.value = true
+}
+async function qrSave() {
+  const name = qrForm.value.name.trim()
+  const body = qrForm.value.body.trim()
+  if (!name || !body) return
+  qrSaving.value = true
+  try {
+    if (qrForm.value.id) await qrUpdate(qrForm.value.id, { name, body })
+    else await qrCreate({ name, body })
+    qrFormOpen.value = false
+  } catch (e) { console.error(e) } finally { qrSaving.value = false }
+}
+const qrDeleteTarget = ref<{ id: string; name: string } | null>(null)
+const qrDeleting = ref(false)
+async function confirmQrDelete() {
+  if (!qrDeleteTarget.value) return
+  qrDeleting.value = true
+  try {
+    await qrRemove(qrDeleteTarget.value.id)
+    qrDeleteTarget.value = null
+  } catch (e) { console.error(e) } finally { qrDeleting.value = false }
+}
+onMounted(() => qrLoad())
+
+// === Active sessions (spec 11) ===
+interface SessionRow { id: string; userAgent: string | null; ip: string | null; createdAt: string; current: boolean }
+const sessions = ref<SessionRow[]>([])
+const revokeSessionTarget = ref<SessionRow | null>(null)
+const revokingSession = ref(false)
+
+async function loadSessions() {
+  try { sessions.value = await api<SessionRow[]>('/auth/sessions') } catch (e) { console.error(e) }
+}
+async function confirmRevokeSession() {
+  if (!revokeSessionTarget.value) return
+  revokingSession.value = true
+  try {
+    await api(`/auth/sessions/${revokeSessionTarget.value.id}/revoke`, { method: 'POST' })
+    revokeSessionTarget.value = null
+    await loadSessions()
+  } catch (e) { console.error(e) } finally { revokingSession.value = false }
+}
+function deviceName(ua: string | null) {
+  if (!ua) return 'Неизвестное устройство'
+  const os = /Windows/.test(ua) ? 'Windows' : /Mac OS|Macintosh/.test(ua) ? 'macOS'
+    : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Linux/.test(ua) ? 'Linux' : ''
+  const br = /Edg/.test(ua) ? 'Edge' : /Firefox/.test(ua) ? 'Firefox'
+    : /Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Браузер'
+  return [br, os].filter(Boolean).join(' · ')
+}
+function fmtSessionDate(iso: string) {
+  return new Date(iso).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+onMounted(loadSessions)
+
 // === Browser push ===
 const push = usePushNotifications()
 const pushBusy = ref(false)
@@ -88,6 +159,7 @@ onMounted(() => {
 
 <template>
   <div class="settings-page">
+    <div class="settings-inner">
     <div class="settings-header">
       <h1 class="text-[22px] font-extrabold text-surface-900">Настройки</h1>
       <p class="text-[13.5px] text-surface-500 mt-1">Управление личным статусом и предпочтениями</p>
@@ -174,6 +246,85 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- Quick replies (everyone) -->
+      <section class="settings-card">
+        <header class="settings-card-head">
+          <i class="pi pi-bolt text-primary-500" />
+          <div class="flex-1">
+            <h2 class="text-[15px] font-bold text-surface-900">Быстрые ответы</h2>
+            <p class="text-[12px] text-surface-500 mt-0.5">
+              Личные шаблоны. В чате вызываются вводом «/» в поле сообщения.
+            </p>
+          </div>
+          <BaseButton variant="secondary" icon="pi pi-plus" @click="qrStartCreate">Добавить</BaseButton>
+        </header>
+
+        <!-- Create / edit form -->
+        <div v-if="qrFormOpen" class="qr-form">
+          <BaseInput v-model="qrForm.name" placeholder="Название (например, привет)" :maxlength="50" />
+          <BaseTextarea v-model="qrForm.body" :rows="3" placeholder="Текст ответа, который уйдёт клиенту" :maxlength="2000" />
+          <div class="flex items-center gap-2 justify-end">
+            <BaseButton variant="text" @click="qrFormOpen = false">Отмена</BaseButton>
+            <BaseButton
+              variant="primary"
+              :loading="qrSaving"
+              :disabled="!qrForm.name.trim() || !qrForm.body.trim()"
+              @click="qrSave"
+            >{{ qrForm.id ? 'Сохранить' : 'Добавить' }}</BaseButton>
+          </div>
+        </div>
+
+        <!-- List -->
+        <div v-if="qrItems.length === 0 && !qrFormOpen" class="text-[13px] text-surface-400 py-3">
+          Пока нет шаблонов. Добавьте первый — и вызывайте его в чате через «/».
+        </div>
+        <div v-else class="flex flex-col gap-2 mt-1">
+          <div v-for="r in qrItems" :key="r.id" class="qr-list-item">
+            <div class="flex-1 min-w-0">
+              <div class="text-[13.5px] font-semibold text-surface-900">/{{ r.name }}</div>
+              <div class="text-[12px] text-surface-500 truncate">{{ r.body }}</div>
+            </div>
+            <button class="qr-icon-btn" title="Изменить" @click="qrStartEdit(r)"><i class="pi pi-pencil" /></button>
+            <button class="qr-icon-btn qr-icon-danger" title="Удалить" @click="qrDeleteTarget = { id: r.id, name: r.name }"><i class="pi pi-trash" /></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Active sessions (everyone) -->
+      <section class="settings-card">
+        <header class="settings-card-head">
+          <i class="pi pi-desktop text-primary-500" />
+          <div>
+            <h2 class="text-[15px] font-bold text-surface-900">Активные сессии</h2>
+            <p class="text-[12px] text-surface-500 mt-0.5">
+              Устройства, на которых выполнен вход. Лишние можно завершить.
+            </p>
+          </div>
+        </header>
+
+        <div class="flex flex-col gap-2">
+          <div v-for="s in sessions" :key="s.id" class="sess-item">
+            <i class="pi pi-desktop sess-icon" />
+            <div class="flex-1 min-w-0">
+              <div class="text-[13.5px] font-semibold text-surface-900">
+                {{ deviceName(s.userAgent) }}
+                <span v-if="s.current" class="sess-current">это устройство</span>
+              </div>
+              <div class="text-[11.5px] text-surface-400 mt-0.5">
+                {{ s.ip || '—' }} · вход {{ fmtSessionDate(s.createdAt) }}
+              </div>
+            </div>
+            <button
+              v-if="!s.current"
+              class="sess-revoke"
+              type="button"
+              @click="revokeSessionTarget = s"
+            >Завершить</button>
+          </div>
+          <div v-if="sessions.length === 0" class="text-[13px] text-surface-400 py-2">Нет активных сессий</div>
+        </div>
+      </section>
+
       <!-- Escalation timeouts (admin only) -->
       <section v-if="isAdmin" class="settings-card">
         <header class="settings-card-head">
@@ -210,11 +361,45 @@ onMounted(() => {
         </div>
       </section>
     </div>
+    </div>
+
+    <BaseConfirmDialog
+      :open="!!qrDeleteTarget"
+      icon="pi pi-trash"
+      icon-variant="danger"
+      title="Удалить шаблон?"
+      confirm-label="Удалить"
+      confirm-variant="danger"
+      :loading="qrDeleting"
+      @update:open="(v: boolean) => !v && (qrDeleteTarget = null)"
+      @confirm="confirmQrDelete"
+    >
+      Быстрый ответ <strong>/{{ qrDeleteTarget?.name }}</strong> будет удалён без возможности восстановления.
+    </BaseConfirmDialog>
+
+    <BaseConfirmDialog
+      :open="!!revokeSessionTarget"
+      icon="pi pi-sign-out"
+      icon-variant="danger"
+      title="Завершить сессию?"
+      confirm-label="Завершить"
+      confirm-variant="danger"
+      :loading="revokingSession"
+      @update:open="(v: boolean) => !v && (revokeSessionTarget = null)"
+      @confirm="confirmRevokeSession"
+    >
+      Сессия на устройстве <strong>{{ deviceName(revokeSessionTarget?.userAgent ?? null) }}</strong> будет завершена.
+    </BaseConfirmDialog>
   </div>
 </template>
 
 <style scoped>
 .settings-page {
+  height: 100%;
+  overflow-y: auto;
+  width: 100%;
+}
+.settings-inner {
   max-width: 760px;
   margin: 0 auto;
   padding: 32px 28px 48px;
@@ -246,6 +431,78 @@ onMounted(() => {
   background: var(--p-surface-50);
   border-radius: 10px;
 }
+
+.qr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: var(--p-surface-50);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 12px;
+}
+.qr-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--p-surface-50);
+  border-radius: 10px;
+}
+.qr-icon-btn {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--p-surface-500);
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s;
+}
+.qr-icon-btn:hover { background: var(--p-surface-200); color: var(--p-surface-800); }
+.qr-icon-danger:hover { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+
+.sess-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  background: var(--p-surface-50);
+  border-radius: 10px;
+}
+.sess-icon {
+  width: 34px; height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--p-surface-100);
+  color: var(--p-surface-500);
+  font-size: 14px;
+}
+.sess-current {
+  font-size: 11px;
+  font-weight: 600;
+  color: #16a34a;
+  background: rgba(34, 197, 94, 0.14);
+  padding: 1px 7px;
+  border-radius: 6px;
+  margin-left: 4px;
+}
+.sess-revoke {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.1);
+  transition: background 0.12s;
+}
+.sess-revoke:hover { background: rgba(239, 68, 68, 0.18); }
 
 .esc-input {
   width: 84px;

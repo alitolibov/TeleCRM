@@ -19,7 +19,9 @@ function onItemClick(n: { id: string; chatId?: string }) {
 }
 
 function iconFor(type: string) {
-  return type === 'escalation' ? 'pi pi-exclamation-triangle' : 'pi pi-send'
+  if (type === 'escalation') return 'pi pi-exclamation-triangle'
+  if (type === 'system') return 'pi pi-wifi'
+  return 'pi pi-send'
 }
 
 function onClickOutside(e: MouseEvent) {
@@ -61,7 +63,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
             :class="{ 'notif-item-clickable': n.chatId }"
             @click="onItemClick(n)"
           >
-            <span class="notif-icon" :class="n.type === 'escalation' ? (n.level && n.level >= 2 ? 'notif-icon-danger' : 'notif-icon-warn') : 'notif-icon-info'">
+            <span class="notif-icon" :class="n.type === 'escalation' ? (n.level && n.level >= 2 ? 'notif-icon-danger' : 'notif-icon-warn') : n.type === 'system' ? 'notif-icon-warn' : 'notif-icon-info'">
               <i :class="iconFor(n.type)" />
             </span>
             <div class="flex-1 min-w-0">

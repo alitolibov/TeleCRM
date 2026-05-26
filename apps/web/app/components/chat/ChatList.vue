@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Chat } from '~/stores/chats'
 import type { ChatListFilters } from '~/composables/useChats'
+import BaseDatePicker from '~/components/BaseDatePicker.vue'
 import { avatarColor, initials, formatTime } from '~/utils/format'
 
 const props = defineProps<{
@@ -33,8 +34,23 @@ const statusOptions = [
 
 // Whether any filter/search is active — drives the empty-state copy.
 const hasActiveFilter = computed(() =>
-  !!(props.filters.status || props.filters.assignedTo || props.filters.q.trim()),
+  !!(props.filters.status || props.filters.assignedTo || props.filters.dateFrom || props.filters.dateTo || props.filters.q.trim()),
 )
+
+// Date range (by last message, spec 5.2) — collapsible to save sidebar space.
+const showDateFilter = ref(false)
+const dateRange = ref<Date[] | null>(null)
+watch(dateRange, (r) => {
+  if (r?.[0] && r[1]) {
+    const from = new Date(r[0]); from.setHours(0, 0, 0, 0)
+    const to = new Date(r[1]); to.setHours(23, 59, 59, 999)
+    props.filters.dateFrom = from.toISOString()
+    props.filters.dateTo = to.toISOString()
+  } else {
+    props.filters.dateFrom = ''
+    props.filters.dateTo = ''
+  }
+})
 
 // === Custom "responsible manager" dropdown (admin only) ===
 const managerMenuOpen = ref(false)
@@ -82,17 +98,19 @@ function chatPreview(chat: Chat): string {
   if (!last) return ''
   const prefix = senderPrefix(last)
   const c = last.content
-  if (!c) return prefix + '...'
-  switch (c.type) {
-    case 'text':      return prefix + c.text
-    case 'photo':     return prefix + '📷 Фото' + (c.caption ? `: ${c.caption}` : '')
-    case 'voice':     return prefix + '🎤 Голосовое сообщение'
-    case 'video':     return prefix + '🎥 Видео' + (c.caption ? `: ${c.caption}` : '')
-    case 'videoNote': return prefix + '⭕ Видеосообщение'
-    case 'document':  return prefix + '📎 ' + (c.fileName || 'Файл')
-    case 'sticker':   return prefix + (c.emoji || '🎁') + ' Стикер'
-    default:          return prefix + 'Сообщение'
-  }
+  const body =
+    !c ? '...'
+    : c.type === 'text'      ? c.text
+    : c.type === 'photo'     ? '📷 Фото' + (c.caption ? `: ${c.caption}` : '')
+    : c.type === 'voice'     ? '🎤 Голосовое сообщение'
+    : c.type === 'video'     ? '🎥 Видео' + (c.caption ? `: ${c.caption}` : '')
+    : c.type === 'videoNote' ? '⭕ Видеосообщение'
+    : c.type === 'document'  ? '📎 ' + (c.fileName || 'Файл')
+    : c.type === 'sticker'   ? (c.emoji || '🎁') + ' Стикер'
+    : 'Сообщение'
+  const full = prefix + body
+  // Spec 5.1 — last-message preview truncated to 80 chars.
+  return full.length > 80 ? full.slice(0, 80) + '…' : full
 }
 
 function statusLabel(s: string) {
@@ -110,6 +128,8 @@ function resetFilters() {
   props.filters.status = ''
   props.filters.assignedTo = ''
   props.filters.q = ''
+  dateRange.value = null
+  showDateFilter.value = false
 }
 </script>
 
@@ -184,6 +204,25 @@ function resetFilters() {
           </div>
         </Transition>
       </div>
+
+      <!-- Date filter (by last message, spec 5.2) — collapsible -->
+      <button
+        class="cl-date-toggle"
+        :class="{ 'cl-date-toggle-active': showDateFilter || filters.dateFrom }"
+        type="button"
+        @click="showDateFilter = !showDateFilter"
+      >
+        <i class="pi pi-calendar" />
+        <span>{{ filters.dateFrom ? 'Период выбран' : 'Фильтр по дате' }}</span>
+        <i class="pi pi-chevron-down text-[10px] ml-auto" :class="{ 'rotate-180': showDateFilter }" />
+      </button>
+      <BaseDatePicker
+        v-if="showDateFilter"
+        v-model="dateRange"
+        selectionMode="range"
+        placeholder="Дата последнего сообщения"
+        dateFormat="d MM yy"
+      />
 
       <button
         v-if="hasActiveFilter"

@@ -11,6 +11,36 @@ function buildRedisConnection() {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Extract the wait time (seconds) from a Telegram FLOOD_WAIT / 429 error, else 0. */
+function floodWaitSeconds(e: any): number {
+  const msg = `${e?.message ?? e?.text ?? ''}`
+  const m = msg.match(/retry after (\d+)/i) || msg.match(/FLOOD_WAIT_(\d+)/i)
+  if (m) return Number(m[1])
+  if (e?.code === 429 && typeof e?.retry_after === 'number') return e.retry_after
+  return 0
+}
+
+/**
+ * Invoke TDLib respecting rate limits (spec 3.5): on FLOOD_WAIT, wait the
+ * requested interval and retry. The message stays "отправляется" in the CRM
+ * until it actually goes through (the echo flips it to "sent").
+ */
+async function invokeWithFloodRetry(client: any, payload: any, attempt = 0): Promise<any> {
+  try {
+    return await client.invoke(payload)
+  } catch (e) {
+    const wait = floodWaitSeconds(e)
+    if (wait > 0 && attempt < 5) {
+      console.warn(`[tg-worker] FLOOD_WAIT ${wait}s — retry ${attempt + 1}/5`)
+      await sleep((wait + 1) * 1000)
+      return invokeWithFloodRetry(client, payload, attempt + 1)
+    }
+    throw e
+  }
+}
+
 export function setupSender(client: any) {
   const worker = new Worker<TgOutgoingJob>(
     REDIS_QUEUES.tgOutgoing,
@@ -36,7 +66,7 @@ export function setupSender(client: any) {
       }
 
       if (content.type === 'text') {
-        await client.invoke(buildPayload({
+        await invokeWithFloodRetry(client, buildPayload({
           _: 'inputMessageText',
           text: { _: 'formattedText', text: content.text, entities: [] },
         }))
@@ -44,7 +74,7 @@ export function setupSender(client: any) {
       }
 
       if (content.type === 'photo') {
-        await client.invoke(buildPayload({
+        await invokeWithFloodRetry(client, buildPayload({
           _: 'inputMessagePhoto',
           photo: { _: 'inputFileLocal', path: content.filePath },
           caption: content.caption
@@ -55,7 +85,7 @@ export function setupSender(client: any) {
       }
 
       if (content.type === 'video') {
-        await client.invoke(buildPayload({
+        await invokeWithFloodRetry(client, buildPayload({
           _: 'inputMessageVideo',
           video: { _: 'inputFileLocal', path: content.filePath },
           supports_streaming: true,
@@ -77,7 +107,7 @@ export function setupSender(client: any) {
             ? { _: 'inputMessageVideo', video: { _: 'inputFileLocal', path: it.filePath }, supports_streaming: true, caption: cap }
             : { _: 'inputMessagePhoto', photo: { _: 'inputFileLocal', path: it.filePath }, caption: cap }
         })
-        await client.invoke({
+        await invokeWithFloodRetry(client, {
           _: 'sendMessageAlbum',
           chat_id: chatId,
           input_message_contents: inputs,
@@ -86,7 +116,7 @@ export function setupSender(client: any) {
       }
 
       if (content.type === 'document') {
-        await client.invoke(buildPayload({
+        await invokeWithFloodRetry(client, buildPayload({
           _: 'inputMessageDocument',
           document: { _: 'inputFileLocal', path: content.filePath },
           caption: content.caption

@@ -22,11 +22,23 @@
           Чаты
           <Badge v-if="totalUnread > 0" :value="totalUnread" class="ml-auto" />
         </NuxtLink>
+        <NuxtLink to="/results" class="nav-item" :class="{ 'nav-active': route.path === '/results' }">
+          <i class="pi pi-flag text-base" />
+          Результаты
+        </NuxtLink>
 
         <span class="text-[11px] font-semibold text-surface-400 uppercase tracking-widest px-2.5 py-2 mt-2">Управление</span>
         <NuxtLink v-if="user?.role === 'admin'" to="/employees" class="nav-item" :class="{ 'nav-active': route.path === '/employees' }">
           <i class="pi pi-users text-base" />
           Сотрудники
+        </NuxtLink>
+        <NuxtLink v-if="user?.role === 'admin'" to="/reports" class="nav-item" :class="{ 'nav-active': route.path === '/reports' }">
+          <i class="pi pi-chart-bar text-base" />
+          Отчёты
+        </NuxtLink>
+        <NuxtLink v-if="user?.role === 'admin'" to="/logs" class="nav-item" :class="{ 'nav-active': route.path === '/logs' }">
+          <i class="pi pi-history text-base" />
+          Журнал
         </NuxtLink>
         <NuxtLink to="/settings" class="nav-item" :class="{ 'nav-active': route.path === '/settings' }">
           <i class="pi pi-cog text-base" />
@@ -139,9 +151,11 @@ function onAuthRevoked() {
 // Unified in-app notification (escalation / transfer received). Adds to the bell
 // centre AND shows a clickable toast — both lead to the relevant chat, so the
 // employee always knows what/where, regardless of OS push delivery.
-function onNotify(p: { type: 'escalation' | 'transfer'; title: string; body: string; chatId?: string; level?: number }) {
+function onNotify(p: { type: 'escalation' | 'transfer' | 'system'; title: string; body: string; chatId?: string; level?: number }) {
   notifications.add(p)
-  const severity = p.type === 'escalation' ? (p.level && p.level >= 2 ? 'error' : 'warn') : 'info'
+  const severity = p.type === 'escalation'
+    ? (p.level && p.level >= 2 ? 'error' : 'warn')
+    : p.type === 'system' ? 'warn' : 'info'
   toast.add({
     severity,
     summary: p.title,

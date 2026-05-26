@@ -5,6 +5,8 @@ import type { Chat, ChatMessage, ChatClient } from '~/stores/chats'
 export interface ChatListFilters {
   status: '' | 'new' | 'active' | 'closed'
   assignedTo: string          // '' = all, 'unassigned', or a manager uuid (admin only)
+  dateFrom: string            // ISO; filter by last-message date (spec 5.2)
+  dateTo: string
   q: string
 }
 
@@ -58,7 +60,7 @@ export function useChats() {
   const hasMore = computed(() => nextCursor.value !== null)
 
   const filters = reactive<ChatListFilters>({
-    status: '', assignedTo: '', q: '',
+    status: '', assignedTo: '', dateFrom: '', dateTo: '', q: '',
   })
 
   function buildListQuery(cursor?: string | null): string {
@@ -66,6 +68,8 @@ export function useChats() {
     if (cursor) p.set('cursor', cursor)
     if (filters.status) p.set('status', filters.status)
     if (filters.assignedTo) p.set('assignedTo', filters.assignedTo)
+    if (filters.dateFrom) p.set('dateFrom', filters.dateFrom)
+    if (filters.dateTo) p.set('dateTo', filters.dateTo)
     const q = filters.q.trim()
     if (q) p.set('q', q)
     return p.toString()

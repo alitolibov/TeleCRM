@@ -8,6 +8,10 @@ import { ChatsModule } from './chats/chats.module'
 import { FilesModule } from './files/files.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { SettingsModule } from './settings/settings.module'
+import { QuickRepliesModule } from './quick-replies/quick-replies.module'
+import { ReportsModule } from './reports/reports.module'
+import { LogsModule } from './logs/logs.module'
+import { ConnectionMonitorModule } from './connection-monitor/connection-monitor.module'
 import { HealthController } from './health.controller'
 
 @Module({
@@ -28,6 +32,10 @@ import { HealthController } from './health.controller'
     FilesModule,
     NotificationsModule,
     SettingsModule,
+    QuickRepliesModule,
+    ReportsModule,
+    LogsModule,
+    ConnectionMonitorModule,
   ],
   controllers: [HealthController],
 })

@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { and, eq, gt, isNull } from 'drizzle-orm'
 import * as argon2 from 'argon2'
 import { DRIZZLE, type Db } from '../db/drizzle.module'
-import { sessions, users } from '../db/schema'
+import { sessions, users, actionLogs } from '../db/schema'
 import { UsersService } from '../users/users.service'
 import type { User } from '../db/schema'
 
@@ -32,7 +32,7 @@ export class AuthService {
     return user
   }
 
-  async login(user: User, meta: { userAgent?: string; ip?: string }) {
+  async login(user: User, meta: { userAgent?: string; ip?: string }, logEvent = true) {
     const accessToken = this.jwtService.sign(
       { sub: user.id, role: user.role },
       { secret: this.config.get('JWT_ACCESS_SECRET'), expiresIn: '8h' },
@@ -46,6 +46,13 @@ export class AuthService {
       ip: meta.ip,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
     })
+
+    // Audit log (spec 13). `logEvent=false` on token refresh so it isn't spammed.
+    if (logEvent) {
+      await this.db.insert(actionLogs).values({
+        action: 'user_login', actorId: user.id, metadata: { userAgent: meta.userAgent ?? null },
+      }).catch(() => {})
+    }
 
     return { accessToken, refreshToken, user }
   }
@@ -69,14 +76,47 @@ export class AuthService {
       .set({ revokedAt: new Date() })
       .where(eq(sessions.id, session.id))
 
-    return this.login(session.user, meta)
+    return this.login(session.user, meta, false)
+  }
+
+  /** Active sessions for the user (spec 11) — current device flagged via the cookie. */
+  async listSessions(userId: string, currentRefreshToken?: string) {
+    const rows = await this.db.query.sessions.findMany({
+      where: and(eq(sessions.userId, userId), isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date())),
+      orderBy: (s, { desc }) => desc(s.createdAt),
+    })
+    const currentHash = currentRefreshToken ? hashToken(currentRefreshToken) : null
+    return rows.map((s) => ({
+      id: s.id,
+      userAgent: s.userAgent,
+      ip: s.ip,
+      createdAt: s.createdAt,
+      current: currentHash != null && s.refreshTokenHash === currentHash,
+    }))
+  }
+
+  /** Revoke one of the user's own sessions (ends that device's access on next refresh). */
+  async revokeSession(userId: string, sessionId: string) {
+    const [revoked] = await this.db
+      .update(sessions)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+      .returning({ id: sessions.id })
+    return { ok: !!revoked }
   }
 
   async logout(refreshToken: string) {
     const hash = hashToken(refreshToken)
+    const session = await this.db.query.sessions.findFirst({
+      where: eq(sessions.refreshTokenHash, hash),
+      columns: { userId: true },
+    })
     await this.db
       .update(sessions)
       .set({ revokedAt: new Date() })
       .where(eq(sessions.refreshTokenHash, hash))
+    if (session) {
+      await this.db.insert(actionLogs).values({ action: 'user_logout', actorId: session.userId }).catch(() => {})
+    }
   }
 }

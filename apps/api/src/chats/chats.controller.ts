@@ -26,6 +26,7 @@ import { CloseChatDto } from './dto/close-chat.dto'
 import { EditMessageDto } from './dto/edit-message.dto'
 import { ListChatsDto } from './dto/list-chats.dto'
 import { TransferChatDto } from './dto/transfer-chat.dto'
+import { ResultsQueryDto } from './dto/results-query.dto'
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -38,6 +39,15 @@ export class ChatsController {
     @Query() query: ListChatsDto,
   ) {
     return this.chatsService.findAll(user.id, user.role, query)
+  }
+
+  // Must be declared before ':id' so "results" isn't captured as a chat id.
+  @Get('results')
+  results(
+    @CurrentUser() user: { id: string; role: string },
+    @Query() query: ResultsQueryDto,
+  ) {
+    return this.chatsService.searchResults(user.id, user.role, query)
   }
 
   @Get(':id')

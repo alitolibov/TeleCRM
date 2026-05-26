@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Body, Req, Res,
+  Controller, Post, Get, Body, Req, Res, Param,
   UseGuards, HttpCode, HttpStatus,
 } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
@@ -67,6 +67,19 @@ export class AuthController {
   @Get('me')
   async me(@CurrentUser() user: { id: string; role: string }) {
     return user
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('sessions')
+  async sessions(@CurrentUser() user: { id: string }, @Req() req: Request) {
+    return this.authService.listSessions(user.id, req.cookies?.[COOKIE_NAME])
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('sessions/:id/revoke')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async revokeSession(@CurrentUser() user: { id: string }, @Param('id') id: string) {
+    await this.authService.revokeSession(user.id, id)
   }
 
   private sanitize(user: User) {
