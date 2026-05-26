@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
+import { Inject, Injectable, Optional, OnModuleInit, OnModuleDestroy, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common'
 import { Queue, QueueEvents } from 'bullmq'
 import { InjectQueue } from '@nestjs/bullmq'
 import { ConfigService } from '@nestjs/config'
@@ -570,10 +570,20 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async assign(chatId: string, userId: string) {
+    const prev = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      columns: { status: true },
+    })
+
     await this.db
       .update(schema.chats)
       .set({ assignedTo: userId, status: 'active', updatedAt: new Date() })
       .where(eq(schema.chats.id, chatId))
+
+    // Record "взял в работу" so it shows up in the client history timeline.
+    if (prev && prev.status !== 'active') {
+      await this.logStatusChange(chatId, userId, prev.status, 'active', { trigger: 'taken_into_work' })
+    }
 
     // Return with assignedUser populated so the frontend tag updates immediately.
     const chat = await this.db.query.chats.findFirst({
@@ -595,6 +605,110 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       })
     }
     return chat
+  }
+
+  /**
+   * Manual transfer (spec 8): hand a chat to another employee or return it to
+   * the queue. A comment (≥10 chars) is mandatory; the recipient sees it as a
+   * system note in the timeline and gets a push. Owner or admin only.
+   */
+  async transfer(
+    chatId: string,
+    actorId: string,
+    actorRole: 'admin' | 'manager',
+    toUserId: string | null,
+    comment: string,
+  ) {
+    const note = (comment ?? '').trim()
+    if (note.length < 10) {
+      throw new BadRequestException('Комментарий обязателен — минимум 10 символов')
+    }
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: { client: true },
+    })
+    if (!chat) throw new NotFoundException('Чат не найден')
+
+    // Managers can only transfer chats they own; admins can transfer anything.
+    if (actorRole !== 'admin' && chat.assignedTo !== actorId) {
+      throw new ForbiddenException('Можно передавать только свои чаты')
+    }
+
+    const fromUserId = chat.assignedTo
+
+    if (toUserId) {
+      const target = await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, toUserId) })
+      if (!target || target.deletedAt) throw new BadRequestException('Сотрудник не найден')
+      if (toUserId === fromUserId) throw new BadRequestException('Чат уже у этого сотрудника')
+    }
+
+    // Either way the chat becomes 'new' so the recipient (or the queue) sees it
+    // as a fresh chat to take into work — on reassign the owner is the target,
+    // on queue-return the owner is cleared.
+    await this.db.update(schema.chats).set(
+      toUserId
+        ? { assignedTo: toUserId, status: 'new', updatedAt: new Date() }
+        : { assignedTo: null, status: 'new', updatedAt: new Date() },
+    ).where(eq(schema.chats.id, chatId))
+
+    await this.db.insert(schema.chatTransfers).values({
+      chatId,
+      fromUserId: fromUserId ?? null,
+      toUserId: toUserId ?? null,
+      comment: note,
+      createdBy: actorId,
+    })
+    await this.db.insert(schema.actionLogs).values({
+      action: 'chat_transferred',
+      actorId,
+      chatId,
+      metadata: { from: fromUserId, to: toUserId, comment: note, mode: toUserId ? 'reassign' : 'queue' },
+    })
+
+    // System note in the timeline — the recipient sees the comment in context.
+    const fromUser = fromUserId
+      ? await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, fromUserId), columns: { firstName: true } })
+      : null
+    const fromName = fromUser?.firstName ?? null
+    const text = toUserId
+      ? `🔄 Чат передан${fromName ? ` от ${fromName}` : ''}: ${note}`
+      : `↩️ Чат возвращён в очередь${fromName ? ` (${fromName})` : ''}: ${note}`
+    const [sysMsg] = await this.db.insert(schema.messages).values({
+      chatId,
+      telegramMessageId: Date.now(),
+      senderType: 'system',
+      senderId: actorId,
+      contentType: 'text',
+      content: { type: 'text', text },
+      isRead: true,
+      status: 'sent',
+      createdAt: new Date(),
+    }).returning()
+
+    const updated = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      with: { assignedUser: { columns: { id: true, firstName: true, username: true } } },
+    })
+
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      status: updated?.status,
+      assignedTo: updated?.assignedTo ?? null,
+      assignedUser: updated?.assignedUser ?? null,
+    })
+    this.gateway?.emitNewMessage(chatId, { ...sysMsg, client: chat.client })
+
+    // Notify the receiving employee (spec 10.2: "Чат передан менеджеру").
+    if (toUserId) {
+      const clientName = [chat.client.firstName, chat.client.lastName].filter(Boolean).join(' ') || 'Клиент'
+      const title = `Вам передали чат: ${clientName}`
+      this.notifications?.sendToUser(toUserId, { title, body: note, chatId, tag: chatId, force: true }).catch(() => {})
+      // In-app notification (center + toast) — reliable regardless of OS push.
+      this.gateway?.emitToUsers([toUserId], 'notify', { type: 'transfer', title, body: note, chatId })
+    }
+
+    return updated
   }
 
   private async logStatusChange(
@@ -784,13 +898,34 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
           comment: string | null
         }
       | { type: 'reopened'; date: string; trigger?: string }
+      | { type: 'taken'; date: string }
+      | { type: 'transferred'; date: string; fromName: string | null; toName: string | null; comment: string | null; mode: 'reassign' | 'queue' }
       | { type: 'first_contact'; date: string }
     const timeline: TimelineItem[] = []
+
+    // Resolve user ids → names for transfer entries (small table; load once).
+    const hasTransfers = logs.some((l) => l.action === 'chat_transferred')
+    const userNames = new Map<string, string>()
+    if (hasTransfers) {
+      const users = await this.db.query.users.findMany({ columns: { id: true, firstName: true } })
+      for (const u of users) userNames.set(u.id, u.firstName)
+    }
 
     // Each close-event becomes its own timeline entry with its own metadata,
     // so multiple closes of the same chat (close → reopen → close again) all show up.
     for (const log of logs) {
       const meta = log.metadata as any
+      if (log.action === 'chat_transferred') {
+        timeline.push({
+          type: 'transferred',
+          date: log.createdAt.toISOString(),
+          fromName: meta?.from ? userNames.get(meta.from) ?? null : null,
+          toName: meta?.to ? userNames.get(meta.to) ?? null : null,
+          comment: meta?.comment ?? null,
+          mode: meta?.to ? 'reassign' : 'queue',
+        })
+        continue
+      }
       if (log.action !== 'chat_status_changed') continue
       if (meta?.to === 'closed' && meta?.clientStatus) {
         timeline.push({
@@ -807,6 +942,11 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
           type: 'reopened',
           date: log.createdAt.toISOString(),
           trigger: meta?.trigger,
+        })
+      } else if (meta?.to === 'active' && meta?.from === 'new') {
+        timeline.push({
+          type: 'taken',
+          date: log.createdAt.toISOString(),
         })
       }
     }

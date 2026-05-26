@@ -11,6 +11,7 @@
         <span class="text-[17px] font-extrabold tracking-tight">
           Tele<span class="text-primary">CRM</span>
         </span>
+        <NotificationBell class="ml-auto -mr-1.5" @open-chat="openChatFromNotification" />
       </div>
 
       <!-- Nav -->
@@ -108,6 +109,8 @@ const usersStore = useUsersStore()
 const authStore = useAuthStore()
 const { loadMe, loadAll, setStatus, setupRealtime } = useUserStatus()
 const push = usePushNotifications()
+const toast = useToast()
+const notifications = useNotificationsStore()
 const theme = inject<Ref<string>>('theme')!
 
 const totalUnread = computed(() => chatsStore.totalUnread)
@@ -133,6 +136,26 @@ function onAuthRevoked() {
   navigateTo('/login')
 }
 
+// Unified in-app notification (escalation / transfer received). Adds to the bell
+// centre AND shows a clickable toast — both lead to the relevant chat, so the
+// employee always knows what/where, regardless of OS push delivery.
+function onNotify(p: { type: 'escalation' | 'transfer'; title: string; body: string; chatId?: string; level?: number }) {
+  notifications.add(p)
+  const severity = p.type === 'escalation' ? (p.level && p.level >= 2 ? 'error' : 'warn') : 'info'
+  toast.add({
+    severity,
+    summary: p.title,
+    detail: p.body,
+    life: 9000,
+    // carried into the custom toast template for click-to-open
+    ...(p.chatId ? ({ data: { chatId: p.chatId } } as any) : {}),
+  })
+}
+
+function openChatFromNotification(chatId: string) {
+  navigateTo({ path: '/', query: { chat: chatId } })
+}
+
 onMounted(async () => {
   // Defensive: ensure socket is connected before subscribing/heartbeating.
   // The page-level connect() may or may not run first depending on route.
@@ -144,11 +167,14 @@ onMounted(async () => {
   loadAll().catch(() => {})
   setupRealtime()
   push.init().catch(() => {})   // register service worker + sync push subscription
+  notifications.load()
   on('auth:revoked', onAuthRevoked)
+  on('notify', onNotify)
 })
 
 onUnmounted(() => {
   off('auth:revoked', onAuthRevoked)
+  off('notify', onNotify)
 })
 </script>
 

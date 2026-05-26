@@ -19,10 +19,12 @@ self.addEventListener('push', (event) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      // If a CRM window is already focused, the user is looking at the app —
-      // the in-app sound/badge cover it, so don't show a redundant OS toast.
-      const focused = clients.some((c) => c.focused && c.visibilityState === 'visible')
-      if (focused) return
+      // `force` (escalations/alerts) always shows. Otherwise, if a CRM window is
+      // already focused the in-app sound/badge cover it — skip the redundant toast.
+      if (!data.force) {
+        const focused = clients.some((c) => c.focused && c.visibilityState === 'visible')
+        if (focused) return
+      }
       return self.registration.showNotification(title, options)
     }),
   )

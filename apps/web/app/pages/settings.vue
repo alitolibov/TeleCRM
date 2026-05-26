@@ -1,9 +1,45 @@
 <script setup lang="ts">
+import BaseButton from '~/components/BaseButton.vue'
+
 definePageMeta({ middleware: 'auth' })
 
 const usersStore = useUsersStore()
+const { user } = useAuth()
+const { api } = useApi()
 const { loadMe, setStatus } = useUserStatus()
 const { soundEnabled, setEnabled: setSoundEnabled, play: playSound } = useNotificationSound()
+
+const isAdmin = computed(() => user.value?.role === 'admin')
+
+// === Escalation timeouts (admin only, spec 7.3) ===
+const escalation = ref({ escalationNewMinutes: 15, escalationReplyMinutes: 30 })
+const escalationSaving = ref(false)
+const escalationSaved = ref(false)
+
+async function loadEscalation() {
+  if (!isAdmin.value) return
+  try {
+    const s = await api<{ escalationNewMinutes: number; escalationReplyMinutes: number }>('/settings')
+    escalation.value = {
+      escalationNewMinutes: s.escalationNewMinutes,
+      escalationReplyMinutes: s.escalationReplyMinutes,
+    }
+  } catch (e) { console.error(e) }
+}
+
+async function saveEscalation() {
+  escalationSaving.value = true
+  escalationSaved.value = false
+  try {
+    await api('/settings', { method: 'PATCH', body: escalation.value })
+    escalationSaved.value = true
+    setTimeout(() => { escalationSaved.value = false }, 2000)
+  } catch (e) {
+    console.error(e)
+  } finally {
+    escalationSaving.value = false
+  }
+}
 
 // Toggle + play a preview so the user hears what they just enabled.
 function onSoundToggle(next: boolean) {
@@ -28,7 +64,7 @@ async function onPushToggle(next: boolean) {
   }
 }
 
-onMounted(() => push.init())
+onMounted(() => { push.init(); loadEscalation() })
 
 const isOnline = computed(() => usersStore.me?.status === 'online')
 const lastSeenLabel = computed(() => {
@@ -137,6 +173,42 @@ onMounted(() => {
           <span>Уведомления заблокированы в настройках браузера — разреши их для этого сайта, чтобы включить.</span>
         </div>
       </section>
+
+      <!-- Escalation timeouts (admin only) -->
+      <section v-if="isAdmin" class="settings-card">
+        <header class="settings-card-head">
+          <i class="pi pi-clock text-primary-500" />
+          <div>
+            <h2 class="text-[15px] font-bold text-surface-900">Таймауты эскалации</h2>
+            <p class="text-[12px] text-surface-500 mt-0.5">
+              Когда уведомлять о чатах без реакции — сначала менеджеру, затем (вдвое дольше) администратору.
+            </p>
+          </div>
+        </header>
+
+        <div class="settings-row">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Новый чат не взят в работу</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">Минут до уведомления</span>
+          </div>
+          <input v-model.number="escalation.escalationNewMinutes" type="number" min="1" max="1440" class="esc-input" />
+        </div>
+
+        <div class="settings-row mt-2">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Менеджер не ответил клиенту</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">Минут до уведомления</span>
+          </div>
+          <input v-model.number="escalation.escalationReplyMinutes" type="number" min="1" max="1440" class="esc-input" />
+        </div>
+
+        <div class="flex items-center gap-3 mt-4">
+          <BaseButton variant="primary" :loading="escalationSaving" @click="saveEscalation">Сохранить</BaseButton>
+          <span v-if="escalationSaved" class="text-[12.5px] text-green-600 font-medium">
+            <i class="pi pi-check text-[11px]" /> Сохранено
+          </span>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -175,12 +247,30 @@ onMounted(() => {
   border-radius: 10px;
 }
 
+.esc-input {
+  width: 84px;
+  height: 38px;
+  text-align: center;
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-300);
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--p-surface-900);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.esc-input:focus {
+  border-color: var(--p-primary-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-primary-color) 14%, transparent);
+}
+
 .settings-hint {
   display: flex;
   gap: 8px;
   margin-top: 14px;
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--p-primary-color) 8%, transparent);
+  background: color-mix(in srgb, var(--p-primary-color) 8%, transparent); 
   border: 1px solid color-mix(in srgb, var(--p-primary-color) 20%, transparent);
   border-radius: 10px;
   font-size: 12.5px;

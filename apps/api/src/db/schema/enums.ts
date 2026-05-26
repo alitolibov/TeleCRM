@@ -14,7 +14,7 @@ export const clientStatus = pgEnum('client_status', [
   'thinking', 'consulting', 'waiting_price', 'booked', 'bought',
 ])
 export const actionType = pgEnum('action_type', [
-  'chat_assigned', 'chat_transferred', 'chat_status_changed',
+  'chat_assigned', 'chat_transferred', 'chat_status_changed', 'chat_escalated',
   'user_login', 'user_logout', 'user_status_changed',
   'user_created', 'user_deleted',
 ])

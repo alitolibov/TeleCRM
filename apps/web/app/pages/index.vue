@@ -36,6 +36,7 @@
         @assign="handleAssign"
         @close="handleClose"
         @reopen="handleReopen"
+        @transfer="transferOpen = true"
       />
 
       <!-- Messages -->
@@ -65,7 +66,13 @@
               <span>{{ formatDay(msg.createdAt) }}</span>
             </div>
 
+            <!-- System notices (transfers, etc.) — centered, not a chat bubble -->
+            <div v-if="msg.senderType === 'system'" class="system-note">
+              <span>{{ msg.content?.text || 'Системное сообщение' }}</span>
+            </div>
+
             <div
+              v-else
               class="message-row group"
               :class="[
                 msg.senderType === 'manager' ? 'self-end' : 'self-start',
@@ -154,6 +161,13 @@
       @confirm="onCloseConfirm"
     />
 
+    <TransferChatDialog
+      v-model:open="transferOpen"
+      :saving="transferSaving"
+      :current-assignee-id="transferAssigneeId"
+      @confirm="onTransferConfirm"
+    />
+
     <AdminTakeoverDialog
       :open="guardDialog.open"
       :owner-name="guardDialog.ownerName"
@@ -174,6 +188,7 @@ import MessageContextMenu from '~/components/chat/MessageContextMenu.vue'
 import TakeChatDialog from '~/components/chat/dialogs/TakeChatDialog.vue'
 import DeleteMessageDialog from '~/components/chat/dialogs/DeleteMessageDialog.vue'
 import CloseChatDialog, { type ClosePayload } from '~/components/chat/dialogs/CloseChatDialog.vue'
+import TransferChatDialog, { type TransferPayload } from '~/components/chat/dialogs/TransferChatDialog.vue'
 import AdminTakeoverDialog from '~/components/chat/dialogs/AdminTakeoverDialog.vue'
 import { formatDay } from '~/utils/format'
 
@@ -182,7 +197,7 @@ definePageMeta({ middleware: 'auth' })
 const {
   chats, activeChat, messages, loading, loadingMore, hasMore, filters, loadMoreChats,
   openChat, loadOlder, sendMessage, editMessage, deleteMessage,
-  assignChat, closeChat, reopenChat, loadClientInfo, setupRealtime,
+  assignChat, closeChat, reopenChat, transferChat, loadClientInfo, setupRealtime,
 } = useChats()
 
 type ClientInfoData = Awaited<ReturnType<typeof loadClientInfo>>
@@ -272,6 +287,7 @@ async function handleSend() {
   if (activeChat.value.status === 'new') {
     askTakeChat(async () => {
       try { await assignChat(activeChat.value!.id) } catch { return }
+      await refreshClientInfo(activeChat.value!.id)   // "Взят в работу" → history
       await doDispatch(body, replyTargetId)
     })
     return
@@ -358,6 +374,7 @@ async function acceptTake() {
 async function handleAssign() {
   if (!activeChat.value) return
   await assignChat(activeChat.value.id)
+  await refreshClientInfo(activeChat.value.id)   // surface "Взят в работу" in history
 }
 
 function handleClose() {
@@ -382,6 +399,26 @@ async function onCloseConfirm(payload: ClosePayload) {
     if (activeChat.value) await refreshClientInfo(activeChat.value.id)
   } finally {
     closeChatSaving.value = false
+  }
+}
+
+// === Transfer flow ===
+const transferOpen = ref(false)
+const transferSaving = ref(false)
+const transferAssigneeId = computed(() => activeChat.value?.assignedTo ?? null)
+
+async function onTransferConfirm(payload: TransferPayload) {
+  if (!activeChat.value) return
+  transferSaving.value = true
+  try {
+    const chatId = activeChat.value.id
+    await transferChat({ chatId, toUserId: payload.toUserId, comment: payload.comment })
+    transferOpen.value = false
+    if (activeChat.value?.id === chatId) await refreshClientInfo(chatId)
+  } catch (e: any) {
+    alert(e?.data?.message || 'Не удалось передать чат')
+  } finally {
+    transferSaving.value = false
   }
 }
 
@@ -465,6 +502,12 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return
   composerRef.value?.focusNow()
 }
+
+// Deep-link: /?chat=<id> (from a notification click) opens that chat.
+const route = useRoute()
+watch(() => route.query.chat, (id) => {
+  if (typeof id === 'string' && id && id !== activeChat.value?.id) handleOpenChat(id)
+}, { immediate: true })
 
 onMounted(async () => {
   const token = getToken()
@@ -675,6 +718,24 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--p-surface-900) 35%, transparent);
   color: #fff;
   backdrop-filter: blur(8px);
+}
+
+/* System notices (chat transfers, etc.) — centered chip in the timeline */
+.system-note {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+.system-note span {
+  max-width: 80%;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--p-primary-color) 12%, transparent);
+  color: var(--p-primary-700, var(--p-primary-color));
+  text-align: center;
+  line-height: 1.4;
 }
 
 /* ===== Message bubbles ===== */

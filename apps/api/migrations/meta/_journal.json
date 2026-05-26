@@ -15,6 +15,20 @@
       "when": 1779431496344,
       "tag": "0001_shiny_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779713469539,
+      "tag": "0002_sparkling_purifiers",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779713602169,
+      "tag": "0003_misty_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

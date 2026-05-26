@@ -13,6 +13,8 @@ export interface PushPayload {
   chatId?: string
   /** Collapses repeated notifications for the same chat (one per conversation). */
   tag?: string
+  /** Show even when a CRM window is focused (used for escalations/alerts). */
+  force?: boolean
 }
 
 export interface PushSubscriptionInput {

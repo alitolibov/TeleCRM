@@ -29,6 +29,21 @@ function formatDate(iso: string | null | undefined) {
     year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
   })
 }
+
+/** Like formatDate but always includes the time — used for history events. */
+function formatDateTime(iso: string | null | undefined) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const now = new Date()
+  const time = d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+  if (d.toDateString() === now.toDateString()) return `Сегодня, ${time}`
+  const date = d.toLocaleDateString('ru', {
+    day: 'numeric',
+    month: 'short',
+    year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+  })
+  return `${date}, ${time}`
+}
 </script>
 
 <template>
@@ -110,7 +125,9 @@ function formatDate(iso: string | null | undefined) {
           <span
             class="history-dot"
             :class="t.type === 'closed' ? `status-dot-${t.clientStatus}` :
-                    t.type === 'reopened' ? 'bg-primary-400' : 'bg-surface-300'"
+                    t.type === 'reopened' ? 'bg-primary-400' :
+                    t.type === 'taken' ? 'bg-green-500' :
+                    t.type === 'transferred' ? 'bg-primary-500' : 'bg-surface-300'"
           />
           <div class="flex-1 min-w-0">
             <template v-if="t.type === 'closed'">
@@ -118,12 +135,25 @@ function formatDate(iso: string | null | undefined) {
                 {{ statusLabels[t.clientStatus as ClientStatus] }}{{ t.flight ? ` · ${t.flight}` : '' }}
               </div>
               <div class="text-[11.5px] text-surface-400 mt-0.5">
-                {{ formatDate(t.date) }}<span v-if="t.amount"> · ${{ t.amount }}</span>
+                Закрыт · {{ formatDateTime(t.date) }}<span v-if="t.amount"> · ${{ t.amount }}</span>
               </div>
             </template>
             <template v-else-if="t.type === 'reopened'">
               <div class="text-[13.5px] font-semibold">Возобновлён</div>
-              <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDate(t.date) }}</div>
+              <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDateTime(t.date) }}</div>
+            </template>
+            <template v-else-if="t.type === 'taken'">
+              <div class="text-[13.5px] font-semibold">Взят в работу</div>
+              <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDateTime(t.date) }}</div>
+            </template>
+            <template v-else-if="t.type === 'transferred'">
+              <div class="text-[13.5px] font-semibold">
+                {{ t.mode === 'queue'
+                  ? `Возвращён в очередь${t.fromName ? ` (${t.fromName})` : ''}`
+                  : `Передан${t.fromName ? ` от ${t.fromName}` : ''}${t.toName ? ` → ${t.toName}` : ''}` }}
+              </div>
+              <div v-if="t.comment" class="text-[12px] text-surface-500 mt-0.5 break-words">{{ t.comment }}</div>
+              <div class="text-[11.5px] text-surface-400 mt-0.5">{{ formatDateTime(t.date) }}</div>
             </template>
             <template v-else>
               <div class="text-[13.5px] font-semibold">Первое обращение</div>

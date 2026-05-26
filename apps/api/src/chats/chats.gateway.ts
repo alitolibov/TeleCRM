@@ -86,4 +86,9 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   emitMessageStatus(payload: unknown) {
     this.server.emit('message:status', payload)
   }
+
+  /** Emit an event only to specific users' rooms (e.g. escalation alerts). */
+  emitToUsers(userIds: string[], event: string, payload: unknown) {
+    for (const id of userIds) this.server.to(`user:${id}`).emit(event, payload)
+  }
 }

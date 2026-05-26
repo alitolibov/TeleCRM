@@ -7,6 +7,7 @@ defineEmits<{
   (e: 'assign'): void
   (e: 'close'): void
   (e: 'reopen'): void
+  (e: 'transfer'): void
 }>()
 
 function statusLabel(s: string) {
@@ -31,33 +32,63 @@ function statusLabel(s: string) {
       <span class="header-status" :class="`header-status-${chat.status}`">
         {{ statusLabel(chat.status) }}
       </span>
-      <Button
+      <button
         v-if="chat.status === 'new'"
-        label="Взять в работу"
-        icon="pi pi-bookmark"
-        size="small"
-        severity="primary"
-        outlined
+        class="chat-act chat-act-primary"
         @click="$emit('assign')"
-      />
-      <Button
+      >
+        <i class="pi pi-bookmark" /> Взять в работу
+      </button>
+      <button
+        v-if="chat.status !== 'closed'"
+        class="chat-act chat-act-ghost"
+        @click="$emit('transfer')"
+      >
+        <i class="pi pi-send" /> Передать
+      </button>
+      <button
         v-if="chat.status === 'active'"
-        label="Закрыть"
-        icon="pi pi-check"
-        size="small"
-        severity="secondary"
-        outlined
+        class="chat-act chat-act-ghost"
         @click="$emit('close')"
-      />
-      <Button
+      >
+        <i class="pi pi-check" /> Закрыть
+      </button>
+      <button
         v-if="chat.status === 'closed'"
-        label="Взять обратно"
-        icon="pi pi-refresh"
-        size="small"
-        severity="primary"
-        outlined
+        class="chat-act chat-act-primary"
         @click="$emit('reopen')"
-      />
+      >
+        <i class="pi pi-refresh" /> Взять обратно
+      </button>
     </div>
   </header>
 </template>
+
+<style scoped>
+.chat-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.15s, color 0.15s, filter 0.15s;
+}
+.chat-act > i { font-size: 13px; }
+
+.chat-act-ghost {
+  background: var(--p-surface-100);
+  color: var(--p-surface-700);
+}
+.chat-act-ghost:hover { background: var(--p-surface-200); color: var(--p-surface-900); }
+
+.chat-act-primary {
+  background: var(--p-primary-color);
+  color: var(--p-primary-contrast-color, #fff);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--p-primary-color) 30%, transparent);
+}
+.chat-act-primary:hover { filter: brightness(1.07); }
+</style>

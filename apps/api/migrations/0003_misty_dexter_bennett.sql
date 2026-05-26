@@ -1,0 +1,1 @@
+ALTER TYPE "public"."action_type" ADD VALUE 'chat_escalated' BEFORE 'user_login';

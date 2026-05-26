@@ -24,6 +24,8 @@ export interface ClosePayload {
 export type TimelineItem =
   | { type: 'closed'; date: string; clientStatus: ClientStatus; flight: string | null; amount: string | null; dates: string | null }
   | { type: 'reopened'; date: string; trigger?: string }
+  | { type: 'taken'; date: string }
+  | { type: 'transferred'; date: string; fromName: string | null; toName: string | null; comment: string | null; mode: 'reassign' | 'queue' }
   | { type: 'first_contact'; date: string }
 
 export interface ClientInfo {
@@ -154,6 +156,15 @@ export function useChats() {
   const reopenMutation = useMutation({
     mutationFn: (chatId: string) =>
       api<Chat>(`/chats/${chatId}/reopen`, { method: 'PATCH' }),
+    onSuccess: (chat) => { store.handleChatUpdated(chat) },
+  })
+
+  const transferMutation = useMutation({
+    mutationFn: (p: { chatId: string; toUserId: string | null; comment: string }) =>
+      api<Chat>(`/chats/${p.chatId}/transfer`, {
+        method: 'PATCH',
+        body: { toUserId: p.toUserId, comment: p.comment },
+      }),
     onSuccess: (chat) => { store.handleChatUpdated(chat) },
   })
 
@@ -328,6 +339,7 @@ export function useChats() {
     assignChat: assignMutation.mutateAsync,
     closeChat: closeMutation.mutateAsync,
     reopenChat: reopenMutation.mutateAsync,
+    transferChat: transferMutation.mutateAsync,
     loadClientInfo,
     setupRealtime,
   }

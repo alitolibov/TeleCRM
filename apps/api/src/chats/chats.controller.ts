@@ -25,6 +25,7 @@ import { SendMessageDto } from './dto/send-message.dto'
 import { CloseChatDto } from './dto/close-chat.dto'
 import { EditMessageDto } from './dto/edit-message.dto'
 import { ListChatsDto } from './dto/list-chats.dto'
+import { TransferChatDto } from './dto/transfer-chat.dto'
 
 @UseGuards(JwtAuthGuard)
 @Controller('chats')
@@ -52,6 +53,15 @@ export class ChatsController {
   @Patch(':id/assign')
   assign(@Param('id') id: string, @CurrentUser() user: { id: string }) {
     return this.chatsService.assign(id, user.id)
+  }
+
+  @Patch(':id/transfer')
+  transfer(
+    @Param('id') id: string,
+    @Body() dto: TransferChatDto,
+    @CurrentUser() user: { id: string; role: 'admin' | 'manager' },
+  ) {
+    return this.chatsService.transfer(id, user.id, user.role, dto.toUserId ?? null, dto.comment)
   }
 
   @Patch(':id/close')
