@@ -31,7 +31,29 @@
         </div>
       </Transition>
 
+      <!-- Favorites mode: lightweight header with a "Clear" action;
+           ChatHeader is skipped (its actions don't apply to a fake chat). -->
+      <header v-if="isFavorites" class="favorites-header">
+        <div class="avatar-circle md favorites-avatar">
+          <i class="pi pi-bookmark-fill" />
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="font-bold text-[15px] text-surface-900">Избранное</div>
+          <div class="text-[11.5px] text-surface-400">Личные заметки. Видны только вам.</div>
+        </div>
+        <button
+          v-if="messages.length > 0"
+          class="chat-act chat-act-ghost"
+          type="button"
+          title="Очистить избранное"
+          @click="clearFavoritesOpen = true"
+        >
+          <i class="pi pi-trash" /> Очистить
+        </button>
+      </header>
+
       <ChatHeader
+        v-else
         :chat="activeChat"
         @assign="handleAssign"
         @close="handleClose"
@@ -56,9 +78,16 @@
           </div>
 
           <div v-if="messages.length === 0 && !loadingOlder"
-            class="flex-1 flex flex-col items-center justify-center text-sm text-surface-400 gap-2">
-            <i class="pi pi-comment text-3xl opacity-30" />
-            Нет сообщений
+            class="flex-1 flex flex-col items-center justify-center text-sm text-surface-400 gap-2 px-8 text-center">
+            <i :class="isFavorites ? 'pi pi-bookmark text-3xl opacity-30' : 'pi pi-comment text-3xl opacity-30'" />
+            <template v-if="isFavorites">
+              <div class="text-surface-500 font-medium">Здесь будут ваши заметки</div>
+              <div class="text-[12.5px] leading-snug">
+                Сохраняйте важные мысли и пересланные сообщения клиентов.<br>
+                Никто кроме вас их не видит.
+              </div>
+            </template>
+            <template v-else>Нет сообщений</template>
           </div>
 
           <template v-for="(msg, idx) in messages" :key="msg.id">
@@ -129,7 +158,22 @@
       <p class="text-sm">Выберите чат, чтобы начать переписку</p>
     </main>
 
-    <ClientInfoSidebar v-if="activeChat" :chat="activeChat" :info="clientInfo" />
+    <ClientInfoSidebar v-if="activeChat && !isFavorites" :chat="activeChat" :info="clientInfo" />
+
+    <!-- "Clear favorites" confirmation — irreversible, so a hard-stop dialog
+         rather than a quiet toast undo. -->
+    <BaseConfirmDialog
+      :open="clearFavoritesOpen"
+      icon="pi pi-trash"
+      icon-variant="danger"
+      title="Очистить избранное?"
+      confirm-label="Очистить"
+      confirm-variant="danger"
+      @update:open="(v) => clearFavoritesOpen = v"
+      @confirm="confirmClearFavorites"
+    >
+      Все ваши заметки будут удалены. Действие необратимо.
+    </BaseConfirmDialog>
 
     <TakeChatDialog
       v-model:open="takeDialog.open"
@@ -190,6 +234,9 @@ import DeleteMessageDialog from '~/components/chat/dialogs/DeleteMessageDialog.v
 import CloseChatDialog, { type ClosePayload } from '~/components/chat/dialogs/CloseChatDialog.vue'
 import TransferChatDialog, { type TransferPayload } from '~/components/chat/dialogs/TransferChatDialog.vue'
 import AdminTakeoverDialog from '~/components/chat/dialogs/AdminTakeoverDialog.vue'
+import BaseConfirmDialog from '~/components/BaseConfirmDialog.vue'
+import { FAVORITES_CHAT_ID, useFavorites } from '~/composables/useFavorites'
+import type { Chat } from '~/stores/chats'
 import { formatDay } from '~/utils/format'
 
 definePageMeta({ middleware: 'auth' })
@@ -211,6 +258,31 @@ const toast = useToast()
 // Files queued in the composer before sending (Telegram-style preview tray).
 const attachments = useAttachments()
 const composerRef = ref<{ focus: () => void; focusNow: () => void } | null>(null)
+
+// === Personal "Saved Messages" (#2) ===
+// Module-level composable: entries persist when navigating away and reappear
+// instantly on return. The synthetic chat object is what `activeChat` becomes
+// while in favorites mode — it lets the existing chat-area machinery render
+// without special-casing every reference to `activeChat`.
+const favorites = useFavorites()
+const isFavorites = computed(() => activeChat.value?.id === FAVORITES_CHAT_ID)
+const clearFavoritesOpen = ref(false)
+const favoritesChat: Chat = {
+  id: FAVORITES_CHAT_ID,
+  status: 'active',                  // keeps Composer + send flow unguarded
+  unreadCount: 0,
+  lastMessageAt: null,
+  createdAt: new Date(0).toISOString(),
+  client: { id: FAVORITES_CHAT_ID, telegramId: 0, firstName: 'Избранное' },
+  assignedTo: null,
+}
+// Mirror favorites entries into the messages ref the template renders — keeps
+// the existing v-for / scroll / day-separator logic working unchanged.
+watchEffect(() => {
+  if (activeChat.value?.id === FAVORITES_CHAT_ID) {
+    messages.value = [...favorites.items.value]
+  }
+})
 
 // === Edit / Delete / Reply state via composable ===
 const {
@@ -284,6 +356,13 @@ async function handleSend() {
 
   const replyTargetId = replyingTo.value?.id
 
+  // Favorites mode bypasses every chat-specific gate (assign, takeover,
+  // Telegram send) — entries land directly in the user's private list.
+  if (isFavorites.value) {
+    await doDispatch(body, replyTargetId)
+    return
+  }
+
   // New chat flow — needs to be claimed first
   if (activeChat.value.status === 'new') {
     askTakeChat(async () => {
@@ -302,6 +381,38 @@ async function handleSend() {
  *  The composer is only cleared on success — a failed upload keeps the text +
  *  attachments so the user can retry instead of silently losing them. */
 async function doDispatch(body: string, replyTo?: string) {
+  // Favorites: no Telegram, files land on local storage instead.
+  if (isFavorites.value) {
+    const files = attachments.items.value.map(a => a.file)
+    if (files.length === 0 && !body) return
+    const favReplyId = replyTo  // captured before cancelReplying so we don't lose it
+    try {
+      if (files.length > 0) {
+        uploading.value = true
+        await favorites.upload(files, body || undefined, favReplyId)
+      } else {
+        await favorites.add(body, favReplyId)
+      }
+    } catch (e) {
+      console.error('[favorites] save failed', e)
+      toast.add({
+        severity: 'error',
+        summary: 'Не удалось сохранить',
+        detail: 'Попробуйте ещё раз — содержимое останется в поле ввода.',
+        life: 4000,
+      })
+      uploading.value = false
+      return
+    }
+    uploading.value = false
+    composerText.value = ''
+    attachments.clear()
+    cancelReplying()
+    await nextTick()
+    scrollToBottom()
+    return
+  }
+
   const files = attachments.items.value
   if (files.length > 0) {
     const ok = await doUpload(files.map(a => a.file), body)
@@ -480,8 +591,15 @@ function isMediaOnly(msg: any): boolean {
   return !msg.content?.caption
 }
 
-/** Locally resolve the message a reply points to (by TG message id within the chat). */
-function findReplyTarget(msg: { replyToTgId?: number | null }) {
+/** Locally resolve the message a reply points to.
+ *  - Telegram chats: match by `replyToTgId` (TDLib message id).
+ *  - Favorites: match by `content.replyToId` (parent favorite's uuid). */
+function findReplyTarget(msg: { chatId?: string; replyToTgId?: number | null; content?: any }) {
+  if (msg.chatId === FAVORITES_CHAT_ID) {
+    const parentId = msg.content?.replyToId
+    if (!parentId) return null
+    return messages.value.find(m => m.id === parentId) ?? null
+  }
   if (!msg.replyToTgId) return null
   return messages.value.find(m => m.telegramMessageId === msg.replyToTgId) ?? null
 }
@@ -495,10 +613,40 @@ function jumpToMessage(messageId: string) {
   setTimeout(() => el.classList.remove('msg-flash'), 1200)
 }
 
+async function confirmClearFavorites() {
+  try {
+    await favorites.clear()
+    clearFavoritesOpen.value = false
+    toast.add({ severity: 'success', summary: 'Избранное очищено', life: 2500 })
+  } catch (e) {
+    console.error('[favorites] clear failed', e)
+    toast.add({ severity: 'error', summary: 'Не удалось очистить', life: 4000 })
+  }
+}
+
 async function handleOpenChat(id: string) {
   resetForChat()
   attachments.clear()        // don't carry queued files between chats
+  // Replying/editing belong to a specific message — drop them on switch so
+  // the chip doesn't haunt the next chat with a target that isn't visible there.
+  cancelReplying()
+  cancelEditing()
   composerText.value = ''
+
+  if (id === FAVORITES_CHAT_ID) {
+    // Skip the /chats/:id fetch (there's no such chat) and the client-info
+    // panel (no client). The watchEffect above keeps `messages` in sync with
+    // the favorites list.
+    const chatsStore = useChatsStore()
+    chatsStore.setActiveChat(favoritesChat)
+    clientInfo.value = null
+    await favorites.load()
+    await nextTick()
+    scrollToBottom()
+    composerRef.value?.focus()
+    return
+  }
+
   await openChat(id)
   await refreshClientInfo(id)
   await nextTick()
@@ -653,6 +801,37 @@ onUnmounted(() => {
 .chat-row:hover { background: var(--p-surface-100); }
 .chat-row-active { background: var(--p-surface-100); }
 [data-theme="dark"] .chat-row-active { background: color-mix(in srgb, var(--p-primary-color) 18%, transparent); }
+
+/* Pinned "Saved Messages" row — sits above the regular chat list,
+   subtle accent so it reads as a system entry, not a real chat. */
+.chat-row-favorites {
+  align-items: center;
+  margin-bottom: 4px;
+  border: 1px dashed color-mix(in srgb, var(--p-primary-color) 30%, transparent);
+  background: color-mix(in srgb, var(--p-primary-color) 4%, transparent);
+}
+.chat-row-favorites:hover {
+  background: color-mix(in srgb, var(--p-primary-color) 8%, transparent);
+}
+.chat-row-favorites.chat-row-active {
+  background: color-mix(in srgb, var(--p-primary-color) 14%, transparent);
+  border-style: solid;
+}
+.favorites-avatar {
+  background: linear-gradient(135deg, var(--p-primary-400, #60a5fa), var(--p-primary-700, #1d4ed8));
+}
+.favorites-avatar i { font-size: 18px; }
+
+/* Header shown in place of ChatHeader when "Saved Messages" is open. */
+.favorites-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--p-surface-0);
+  border-bottom: 1px solid var(--p-surface-200);
+  flex-shrink: 0;
+}
 
 .status-dot {
   width: 7px;

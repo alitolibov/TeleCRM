@@ -43,6 +43,13 @@
       "when": 1780255810941,
       "tag": "0005_deep_jack_murdock",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780256939158,
+      "tag": "0006_material_tattoo",
+      "breakpoints": true
     }
   ]
 }

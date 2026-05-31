@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/vue-query'
 import { storeToRefs } from 'pinia'
 import type { Chat, ChatMessage, ChatClient } from '~/stores/chats'
+import { FAVORITES_CHAT_ID } from '~/composables/useFavorites'
 
 export interface ChatListFilters {
   status: '' | 'new' | 'active' | 'closed'
@@ -128,6 +129,11 @@ export function useChats() {
    * client was ever in the CRM.
    */
   async function loadOlder(chatId: string): Promise<number> {
+    // Favorites is a virtual chat — no server-side history pagination, the
+    // useFavorites composable owns the list. Without this guard the scroll-up
+    // handler sends `/chats/favorites/messages?...` and PG explodes on the
+    // sentinel string vs uuid column.
+    if (chatId === FAVORITES_CHAT_ID) return 0
     const oldest = store.messages[0]
     if (!oldest) return 0
     try {
@@ -231,7 +237,9 @@ export function useChats() {
       console.log(`[realtime] full refetch — ${reason}`)
       try { await loadChats() } catch (e) { console.error(e) }
       const activeId = store.activeChat?.id
-      if (activeId) {
+      // Favorites: skip the /chats refetch (virtual id); the per-user list is
+      // small enough that a quiet reload-on-reopen is good enough.
+      if (activeId && activeId !== FAVORITES_CHAT_ID) {
         try {
           const msgs = await api<ChatMessage[]>(`/chats/${activeId}/messages`)
           store.prependMessages(msgs)

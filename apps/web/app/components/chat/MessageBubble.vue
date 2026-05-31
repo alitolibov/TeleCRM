@@ -3,6 +3,7 @@ import type { ChatMessage } from '~/stores/chats'
 import VoicePlayer from '~/components/VoicePlayer.vue'
 import { formatBytes, formatMessageTime, formatVideoDuration } from '~/utils/format'
 import { buildFileUrl } from '~/utils/file-url'
+import { FAVORITES_CHAT_ID } from '~/composables/useFavorites'
 
 const props = defineProps<{
   msg: ChatMessage
@@ -18,8 +19,14 @@ defineEmits<{
 }>()
 
 const config = useRuntimeConfig()
-const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string) =>
-  buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
+/** Favorites media is served from a separate endpoint keyed by the favorite
+ *  row id (== msg.id) — the fileId/remoteFileId args don't apply there. */
+const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string): string => {
+  if (props.msg.chatId === FAVORITES_CHAT_ID) {
+    return `${config.public.apiUrl}/favorites/files/${props.msg.id}`
+  }
+  return buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
+}
 
 /** Telegram-style video: no native controls, custom play button overlay.
  *  Clicking the wrapper toggles play/pause; play/pause events flip a class

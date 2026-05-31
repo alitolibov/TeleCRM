@@ -9,6 +9,8 @@ const props = defineProps<{
   replyingTo: ChatMessage | null
   uploading: boolean
   attachments: Attachment[]
+  /** Hide the paperclip and ignore pasted files — favorites is text-only for now. */
+  disableAttach?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -56,7 +58,7 @@ function onFileChange(e: Event) {
 
 /** Paste an image straight from the clipboard into the attachment tray. */
 function onPaste(e: ClipboardEvent) {
-  if (isEditing.value) return
+  if (isEditing.value || props.disableAttach) return
   const files = Array.from(e.clipboardData?.files ?? [])
   if (files.length) {
     e.preventDefault()
@@ -231,6 +233,7 @@ defineExpose({
     <!-- Composer -->
     <div class="composer">
       <button
+        v-if="!disableAttach"
         class="composer-btn"
         :disabled="uploading || isEditing"
         @click="fileInput?.click()"

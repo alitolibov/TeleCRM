@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Chat } from '~/stores/chats'
 import type { ChatListFilters } from '~/composables/useChats'
+import { FAVORITES_CHAT_ID } from '~/composables/useFavorites'
 import BaseDatePicker from '~/components/BaseDatePicker.vue'
 import { avatarColor, initials, formatTime } from '~/utils/format'
 
@@ -236,6 +237,26 @@ function resetFilters() {
 
     <!-- List -->
     <div class="flex-1 overflow-y-auto px-1.5 py-2" @scroll="onListScroll">
+      <!-- Personal "Saved Messages" — always pinned at top, ignores filters. -->
+      <button
+        v-if="!hasActiveFilter"
+        class="chat-row chat-row-favorites"
+        :class="{ 'chat-row-active': activeId === FAVORITES_CHAT_ID }"
+        @click="$emit('select', FAVORITES_CHAT_ID)"
+      >
+        <div class="avatar-circle md favorites-avatar">
+          <i class="pi pi-bookmark-fill" />
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-baseline gap-2">
+            <span class="font-semibold text-[14.5px] text-surface-900 truncate">Избранное</span>
+          </div>
+          <div class="text-[12.5px] text-surface-400 truncate mt-0.5">
+            Личные заметки и пересланные сообщения
+          </div>
+        </div>
+      </button>
+
       <div v-if="loading" class="flex flex-col gap-1.5 px-1.5">
         <Skeleton v-for="i in 6" :key="i" height="64px" borderRadius="12px" />
       </div>

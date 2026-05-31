@@ -9,6 +9,7 @@ import { FilesModule } from './files/files.module'
 import { NotificationsModule } from './notifications/notifications.module'
 import { SettingsModule } from './settings/settings.module'
 import { QuickRepliesModule } from './quick-replies/quick-replies.module'
+import { FavoritesModule } from './favorites/favorites.module'
 import { ReportsModule } from './reports/reports.module'
 import { LogsModule } from './logs/logs.module'
 import { ConnectionMonitorModule } from './connection-monitor/connection-monitor.module'
@@ -33,6 +34,7 @@ import { HealthController } from './health.controller'
     NotificationsModule,
     SettingsModule,
     QuickRepliesModule,
+    FavoritesModule,
     ReportsModule,
     LogsModule,
     ConnectionMonitorModule,
