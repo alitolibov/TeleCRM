@@ -10,6 +10,10 @@ export const users = pgTable('users', {
   role: userRole('role').notNull(),
   status: userStatus('status').notNull().default('offline'),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  /** Round-robin cursor: when this user last received an auto-distributed chat.
+   *  pickAssignee orders eligible (online + idle) users by this column ASC NULLS
+   *  FIRST so the rotation is fair regardless of total workload. */
+  lastAutoAssignedAt: timestamp('last_auto_assigned_at', { withTimezone: true }),
   // Soft delete — preserves history (chats.assigned_to, action_logs.actor_id, ...).
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -109,11 +109,20 @@ const qrOpen = computed(() => !qrDismissed.value && qrQuery.value !== null && qr
 watch(qrMatches, () => { qrIndex.value = 0 })
 watch(() => props.modelValue, () => { qrDismissed.value = false })
 
-/** Selecting a template sends its body immediately — no intermediate editing. */
+/** Selecting a template inserts its body into the composer for review/edit;
+ *  the user presses Send (or Enter) when ready. Cursor goes to the end so
+ *  the next keystroke continues the template, not overwrites it. */
 function applyQuickReply(r: QuickReply) {
   text.value = r.body
   qrDismissed.value = true
-  nextTick(() => emit('send'))
+  nextTick(() => {
+    const ta = document.querySelector('.composer-textarea') as HTMLTextAreaElement | null
+    if (ta) {
+      ta.focus()
+      const end = ta.value.length
+      ta.setSelectionRange(end, end)
+    }
+  })
 }
 
 function onKeydown(e: KeyboardEvent) {

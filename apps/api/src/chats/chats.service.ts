@@ -174,23 +174,15 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     if (!message) return // duplicate — already processed
 
-    // 4. Auto-distribute — for incoming client messages in a `new` chat with no
-    // owner, pick the least-loaded online employee and assign them. Status
-    // stays `new` until the manager actually responds (then sendMessage flips
-    // it to `active`). This way the chat list still surfaces it as "fresh".
+    // 4. Auto-distribute — round-robin: an incoming client message in a `new`,
+    // unowned chat goes to one idle online user (zero active chats), if any.
+    // Status stays `new` until the manager actually responds (then sendMessage
+    // flips it to `active`), so the chat list still surfaces it as "fresh".
     let autoAssignedTo: string | null = null
     if (!event.isOutgoing && chat.status === 'new' && !chat.assignedTo) {
       autoAssignedTo = await this.pickAssignee()
       if (autoAssignedTo) {
-        await this.db.update(schema.chats)
-          .set({ assignedTo: autoAssignedTo, updatedAt: new Date() })
-          .where(eq(schema.chats.id, chat.id))
-        await this.db.insert(schema.actionLogs).values({
-          action: 'chat_assigned',
-          actorId: null,
-          chatId: chat.id,
-          metadata: { to: autoAssignedTo, reason: 'auto_distribute' },
-        })
+        await this.autoAssignChat(chat.id, autoAssignedTo, 'auto_distribute')
         chat = { ...chat, assignedTo: autoAssignedTo }
         console.log(`[api] auto-distributed chat ${chat.id} → user ${autoAssignedTo}`)
       }
@@ -322,11 +314,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Drains the `new`+unassigned queue by re-running pickAssignee per chat.
-   * Called when a user comes online — they should help take pending chats.
-   * Each iteration re-picks: load balancing accounts for the assignments we
-   * just made, so a single returning manager doesn't get flooded if others
-   * are also online.
+   * Drains the queue one chat per eligible person. With the round-robin rule
+   * (at most one active chat per online user), pickAssignee returns null once
+   * every online user already holds a chat — so the loop naturally stops there
+   * and the rest of the queue waits for someone to close.
+   *
+   * Called when a user comes online and when a chat closes.
    */
   async distributeQueuedChats(): Promise<void> {
     const queued = await this.db.query.chats.findMany({
@@ -338,17 +331,9 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     for (const chat of queued) {
       const assignee = await this.pickAssignee()
-      if (!assignee) return     // nobody online anymore — stop
+      if (!assignee) return     // everyone is busy or offline — stop draining
 
-      await this.db.update(schema.chats)
-        .set({ assignedTo: assignee, updatedAt: new Date() })
-        .where(eq(schema.chats.id, chat.id))
-      await this.db.insert(schema.actionLogs).values({
-        action: 'chat_assigned',
-        actorId: null,
-        chatId: chat.id,
-        metadata: { to: assignee, reason: 'auto_distribute_on_online' },
-      })
+      await this.autoAssignChat(chat.id, assignee, 'auto_distribute_on_online')
 
       const assignedUser = await this.db.query.users.findFirst({
         where: (u, { eq }) => eq(u.id, assignee),
@@ -364,36 +349,50 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Auto-distribution: pick the online employee with the fewest active chats.
-   * Returns null if no one is online. Ties broken by user.id (stable but
-   * arbitrary) — sufficient for now; can swap to round-robin later.
+   * Round-robin auto-distribution: pick the online user who currently has
+   * zero active chats (status `new` or `active`) and whose last auto-assign
+   * is the oldest (NULLS FIRST). Role doesn't matter — admins are in the
+   * rotation too.
+   *
+   * Returns null when everyone is either offline or already holding a chat —
+   * the queue then waits for someone to close or come online.
    */
   async pickAssignee(excludeUserId?: string): Promise<string | null> {
-    const online = await this.db.query.users.findMany({
-      where: (u, { eq, and, isNull }) => and(
-        eq(u.status, 'online'),
-        isNull(u.deletedAt),
-      ),
-      columns: { id: true },
-    })
-    const candidates = excludeUserId ? online.filter(u => u.id !== excludeUserId) : online
-    if (candidates.length === 0) return null
-
-    const counts = await this.db.execute<{ user_id: string; cnt: string }>(sql`
-      SELECT assigned_to as user_id, COUNT(*)::text as cnt
-      FROM ${schema.chats}
-      WHERE status IN ('new', 'active') AND assigned_to IS NOT NULL
-      GROUP BY assigned_to
+    const result = await this.db.execute<{ id: string }>(sql`
+      SELECT u.id
+      FROM ${schema.users} u
+      LEFT JOIN ${schema.chats} c
+        ON c.assigned_to = u.id AND c.status IN ('new', 'active')
+      WHERE u.status = 'online'
+        AND u.deleted_at IS NULL
+        ${excludeUserId ? sql`AND u.id <> ${excludeUserId}` : sql``}
+      GROUP BY u.id, u.last_auto_assigned_at
+      HAVING COUNT(c.id) = 0
+      ORDER BY u.last_auto_assigned_at ASC NULLS FIRST, u.id ASC
+      LIMIT 1
     `)
-    const countByUser = new Map(counts.rows.map(r => [r.user_id, Number(r.cnt)]))
+    return result.rows[0]?.id ?? null
+  }
 
-    let bestId: string | null = null
-    let bestCount = Infinity
-    for (const u of candidates) {
-      const c = countByUser.get(u.id) ?? 0
-      if (c < bestCount) { bestCount = c; bestId = u.id }
-    }
-    return bestId
+  /**
+   * Persists an auto-distribution: updates the chat, advances the round-robin
+   * cursor on the user, and writes the action log. Gateway emit stays at the
+   * call site since each caller already builds its own broadcast payload.
+   */
+  private async autoAssignChat(chatId: string, userId: string, reason: string): Promise<void> {
+    const now = new Date()
+    await this.db.update(schema.chats)
+      .set({ assignedTo: userId, updatedAt: now })
+      .where(eq(schema.chats.id, chatId))
+    await this.db.update(schema.users)
+      .set({ lastAutoAssignedAt: now })
+      .where(eq(schema.users.id, userId))
+    await this.db.insert(schema.actionLogs).values({
+      action: 'chat_assigned',
+      actorId: null,
+      chatId,
+      metadata: { to: userId, reason },
+    })
   }
 
   /**
@@ -779,9 +778,10 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       metadata: { from: fromUserId, to: toUserId, comment: note, mode: toUserId ? 'reassign' : 'queue' },
     })
 
-    // Returning to the queue → try to hand it to another available employee
+    // Returning to the queue → try to hand it to another idle employee
     // (excluding the person who just released it, so it doesn't bounce back).
-    // If nobody else is online, it stays in the queue until someone comes online.
+    // If nobody else is free, it stays in the queue until someone closes or
+    // comes online.
     let recipientId: string | null = toUserId
     let autoAssigned = false
     if (!toUserId) {
@@ -789,15 +789,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       if (auto) {
         recipientId = auto
         autoAssigned = true
-        await this.db.update(schema.chats)
-          .set({ assignedTo: auto, updatedAt: new Date() })
-          .where(eq(schema.chats.id, chatId))
-        await this.db.insert(schema.actionLogs).values({
-          action: 'chat_assigned',
-          actorId: null,
-          chatId,
-          metadata: { to: auto, reason: 'auto_distribute_on_return' },
-        })
+        await this.autoAssignChat(chatId, auto, 'auto_distribute_on_return')
       }
     }
 
@@ -995,6 +987,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       status: chat.status,
       unreadCount: 0,
     })
+
+    // Closing a chat frees the closer's "one active slot" — hand them the
+    // next queued chat right away (round-robin will naturally pick them since
+    // they're now the only idle online user, or the longest-idle one).
+    this.distributeQueuedChats().catch((e) =>
+      console.error('[api] distribute after close failed:', e),
+    )
 
     return chat
   }
