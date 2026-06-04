@@ -42,6 +42,22 @@ const idRemapQueue = new Queue<TgMessageIdRemapEvent>(REDIS_QUEUES.tgIdRemap, {
 
 const userCache = new Map<number, any>()
 
+/** Snapshot a TDLib user into the wire-format we send to the API. Centralised so
+ *  every event source (new message, history, sync) emits the same shape, and so
+ *  the phone field gets picked up wherever it appears. */
+export function toClientSnapshot(user: any, telegramId: number) {
+  return {
+    telegramId,
+    firstName: user.first_name || 'Unknown',
+    lastName: user.last_name || undefined,
+    username: user.usernames?.active_usernames?.[0] ?? user.username ?? undefined,
+    // TDLib returns '' when the phone isn't shared with us — collapse to undefined.
+    phone: user.phone_number ? `+${String(user.phone_number).replace(/^\+/, '')}` : undefined,
+    // TDLib's truth on whether the CRM-account knows them as a contact.
+    isContact: !!user.is_contact,
+  }
+}
+
 export async function getTgUser(client: any, userId: number): Promise<any | null> {
   if (userCache.has(userId)) return userCache.get(userId)
   try {
@@ -167,12 +183,7 @@ export async function syncChats(client: any, limit: number = 100): Promise<void>
           chatId,
           messageId: lastMsg.id,
           isOutgoing: !!lastMsg.is_outgoing,
-          client: {
-            telegramId: chatId,
-            firstName: user.first_name || 'Unknown',
-            lastName: user.last_name || undefined,
-            username: user.usernames?.active_usernames?.[0] ?? user.username ?? undefined,
-          },
+          client: toClientSnapshot(user, chatId),
           content: parseContent(lastMsg.content),
           date: lastMsg.date,
         }
@@ -200,6 +211,14 @@ export function setupMessageHandler(client: any, myUserId: number) {
   console.log(`[tg-worker] message handler ready (skipping self=${myUserId} + service accounts)`)
 
   // When the user reads messages on another device (phone/desktop), TDLib fires
+  // TDLib fires updateUser when a client's profile changes (incl. revealing
+  // their phone number). Refresh the cache so the next event we emit carries
+  // the fresh data; otherwise getTgUser would keep returning the stale snapshot.
+  client.on('update', (update: any) => {
+    if (update._ !== 'updateUser') return
+    if (update.user?.id) userCache.set(update.user.id, update.user)
+  })
+
   // updateChatReadInbox with the new unread_count. Sync this to CRM so the
   // badge clears without needing to open the chat in CRM.
   client.on('update', async (update: any) => {
@@ -250,12 +269,7 @@ export function setupMessageHandler(client: any, myUserId: number) {
       chatId: msg.chat_id,
       messageId: msg.id,
       isOutgoing,
-      client: {
-        telegramId: msg.chat_id,
-        firstName: clientUser.first_name || 'Unknown',
-        lastName: clientUser.last_name || undefined,
-        username: clientUser.usernames?.active_usernames?.[0] ?? clientUser.username ?? undefined,
-      },
+      client: toClientSnapshot(clientUser, msg.chat_id),
       content: parseContent(msg.content),
       date: msg.date,
       unreadCount,

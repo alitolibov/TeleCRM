@@ -60,9 +60,9 @@ const TeleCRMPreset = definePreset(Aura, {
           placeholderColor: '#a1a1aa',
         },
         overlay: {
-          select:  { background: '#ffffff', borderColor: '#e4e4e7', color: '#18181b' },
+          select: { background: '#ffffff', borderColor: '#e4e4e7', color: '#18181b' },
           popover: { background: '#ffffff', borderColor: '#e4e4e7', color: '#18181b' },
-          modal:   { background: '#ffffff', borderColor: '#e4e4e7', color: '#18181b' },
+          modal: { background: '#ffffff', borderColor: '#e4e4e7', color: '#18181b' },
         },
       },
       dark: {
@@ -113,9 +113,9 @@ const TeleCRMPreset = definePreset(Aura, {
         // Aura references surface-900 (= LIGHT in our inverted scale) for overlay
         // bg, which renders dialogs/popovers white in dark mode. Hardcode dark values.
         overlay: {
-          select:  { background: '#1e1b2e', borderColor: '#322f48', color: '#f4f4f5' },
+          select: { background: '#1e1b2e', borderColor: '#322f48', color: '#f4f4f5' },
           popover: { background: '#1e1b2e', borderColor: '#322f48', color: '#f4f4f5' },
-          modal:   { background: '#1e1b2e', borderColor: '#322f48', color: '#f4f4f5' },
+          modal: { background: '#1e1b2e', borderColor: '#322f48', color: '#f4f4f5' },
         },
       },
     },
@@ -177,8 +177,8 @@ export default defineNuxtConfig({
   },
   runtimeConfig: {
     public: {
-      apiUrl: process.env.NUXT_PUBLIC_API_URL ?? 'http://localhost:3000',
-      wsUrl: process.env.NUXT_PUBLIC_WS_URL ?? 'http://localhost:3000',
+      apiUrl: process.env.NUXT_PUBLIC_API_URL ?? 'http://localhost:3002',
+      wsUrl: process.env.NUXT_PUBLIC_WS_URL ?? 'http://localhost:3002',
     },
   },
 })

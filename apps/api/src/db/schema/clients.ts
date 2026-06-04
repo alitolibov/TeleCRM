@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, bigint } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, timestamp, bigint, boolean } from 'drizzle-orm/pg-core'
 
 export const clients = pgTable('clients', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -7,6 +7,11 @@ export const clients = pgTable('clients', {
   firstName: varchar('first_name', { length: 100 }).notNull(),
   lastName: varchar('last_name', { length: 100 }),
   phone: varchar('phone', { length: 20 }),
+  /** Whether the CRM-account's Telegram has this user in its address book.
+   *  Updated from TDLib's `user.is_contact` on every incoming message and on
+   *  the open-time refresh. Drives the sidebar's "В контактах" button —
+   *  CRM-side `contacts` row only controls the custom name override. */
+  inTelegramContacts: boolean('in_telegram_contacts').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

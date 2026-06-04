@@ -7,6 +7,10 @@ export interface TgMessageEvent {
     firstName: string
     lastName?: string
     username?: string
+    /** E.164 phone if TDLib has it; missing when the client hid their number. */
+    phone?: string
+    /** Whether the CRM-account's Telegram has this user in its address book. */
+    isContact?: boolean
   }
   content: TgMessageContent
   date: number

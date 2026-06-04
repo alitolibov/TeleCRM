@@ -24,7 +24,9 @@ function statusLabel(s: string) {
       <div class="font-bold text-[15px] text-surface-900 leading-tight truncate">
         {{ chat.client.firstName }} {{ chat.client.lastName ?? '' }}
       </div>
-      <div class="text-xs text-surface-400 mono mt-0.5 truncate">
+      <!-- CRM-saved contacts hide the @nick/id sub-line — the team-chosen
+           name is the identity now, the TG handle is just noise. -->
+      <div v-if="!chat.hasCrmContact" class="text-xs text-surface-400 mono mt-0.5 truncate">
         {{ chat.client.username ? `@${chat.client.username}` : `id: ${chat.client.telegramId}` }}
       </div>
     </div>

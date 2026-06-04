@@ -16,6 +16,8 @@ import type {
   TgMessageEditedEvent,
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
+  TgClientRefreshRequest,
+  TgClientRefreshResponse,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { DRIZZLE } from '../db/drizzle.module'
@@ -28,6 +30,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   private historyEvents!: QueueEvents
   private editEvents!: QueueEvents
   private deleteEvents!: QueueEvents
+  private clientRefreshEvents!: QueueEvents
 
   constructor(
     @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
@@ -35,6 +38,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(REDIS_QUEUES.tgHistoryRequest) private historyQueue: Queue<TgHistoryRequestJob, TgHistoryResponse>,
     @InjectQueue(REDIS_QUEUES.tgEdit) private editQueue: Queue<TgEditJob>,
     @InjectQueue(REDIS_QUEUES.tgDelete) private deleteQueue: Queue<TgDeleteJob>,
+    @InjectQueue(REDIS_QUEUES.tgClientRefresh) private clientRefreshQueue: Queue<TgClientRefreshRequest, TgClientRefreshResponse>,
     private configService: ConfigService,
     @Optional() private gateway: ChatsGateway,
     @Optional() private notifications?: NotificationsService,
@@ -46,16 +50,21 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     this.historyEvents = new QueueEvents(REDIS_QUEUES.tgHistoryRequest, { connection })
     this.editEvents = new QueueEvents(REDIS_QUEUES.tgEdit, { connection })
     this.deleteEvents = new QueueEvents(REDIS_QUEUES.tgDelete, { connection })
+    this.clientRefreshEvents = new QueueEvents(REDIS_QUEUES.tgClientRefresh, { connection })
   }
 
   async onModuleDestroy() {
     await this.historyEvents?.close().catch(() => {})
     await this.editEvents?.close().catch(() => {})
     await this.deleteEvents?.close().catch(() => {})
+    await this.clientRefreshEvents?.close().catch(() => {})
   }
 
   async processIncomingEvent(event: TgMessageEvent) {
-    // 1. Upsert client (the other party — always derived from chat_id)
+    // 1. Upsert client (the other party — always derived from chat_id).
+    //    If a saved contact exists for this client, the human-chosen first/last
+    //    name win — TDLib's profile updates won't overwrite them. Username and
+    //    updatedAt always refresh.
     const [client] = await this.db
       .insert(schema.clients)
       .values({
@@ -63,13 +72,22 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         firstName: event.client.firstName,
         lastName: event.client.lastName ?? null,
         username: event.client.username ?? null,
+        phone: event.client.phone ?? null,
+        inTelegramContacts: event.client.isContact ?? false,
       })
       .onConflictDoUpdate({
         target: schema.clients.telegramId,
         set: {
-          firstName: event.client.firstName,
-          lastName: event.client.lastName ?? null,
+          firstName: sql`CASE WHEN EXISTS (SELECT 1 FROM contacts WHERE contacts.client_id = clients.id) THEN clients.first_name ELSE EXCLUDED.first_name END`,
+          lastName: sql`CASE WHEN EXISTS (SELECT 1 FROM contacts WHERE contacts.client_id = clients.id) THEN clients.last_name ELSE EXCLUDED.last_name END`,
           username: event.client.username ?? null,
+          // Phone only goes forward — if TDLib starts sharing a number, store
+          // it; if a later event omits it (privacy toggled off again), keep
+          // what we had so the CRM remembers what we once saw.
+          phone: sql`COALESCE(EXCLUDED.phone, clients.phone)`,
+          // TDLib contact flag DOES flip both ways — user can delete the
+          // contact in their TG client and we want the button to reflect that.
+          inTelegramContacts: event.client.isContact ?? false,
           updatedAt: new Date(),
         },
       })
@@ -576,8 +594,44 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     }))
   }
 
+  /**
+   * Ask tg-worker for a fresh TDLib profile snapshot for a given telegram user.
+   * Used when the API knows the cached row is incomplete (e.g. phone is null
+   * because the client only just un-hid their number). Writes through any new
+   * fields (currently just phone — name updates are still gated by contacts).
+   * Short budget so it never noticeably delays a chat open.
+   */
+  async refreshClientFromTg(telegramId: number, username?: string): Promise<TgClientRefreshResponse | null> {
+    const job = await this.clientRefreshQueue.add('refresh', { telegramId, username }, {
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    })
+    let snap: TgClientRefreshResponse
+    try {
+      // Worker does openChat + searchPublicChat + 800ms settle + getUser, so
+      // the budget here is generous enough to cover queue + IPC + slow TDLib.
+      snap = (await job.waitUntilFinished(this.clientRefreshEvents, 6_000)) as TgClientRefreshResponse
+    } catch {
+      return null    // timeout / worker down — silently degrade
+    }
+    // Phone and TG-contact flag both get refreshed here. Phone only ever
+    // moves forward (COALESCE keeps what we knew); is_contact moves both ways
+    // — user can add or delete the contact in their TG client.
+    if (snap.phone || snap.isContact !== undefined) {
+      await this.db
+        .update(schema.clients)
+        .set({
+          ...(snap.phone ? { phone: sql`COALESCE(clients.phone, ${snap.phone})` } : {}),
+          ...(snap.isContact !== undefined ? { inTelegramContacts: snap.isContact } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.clients.telegramId, telegramId))
+    }
+    return snap
+  }
+
   async findOne(chatId: string) {
-    const chat = await this.db.query.chats.findFirst({
+    let chat = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
       with: {
         client: true,
@@ -594,6 +648,33 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       )
     }
 
+    // Always ask the worker for a fresh TDLib snapshot — phone and is_contact
+    // can both change between messages and we want the sidebar to reflect
+    // reality. Short budget so it never holds the open noticeably; on timeout
+    // we just render the cached state.
+    const fresh = await this.refreshClientFromTg(
+      chat.client.telegramId,
+      chat.client.username ?? undefined,
+    ).catch(() => null)
+    if (fresh) {
+      chat = {
+        ...chat,
+        client: {
+          ...chat.client,
+          phone: fresh.phone ?? chat.client.phone,
+          inTelegramContacts: fresh.isContact ?? chat.client.inTelegramContacts,
+        },
+      }
+    }
+
+    // CRM-side "saved contact" row → drives the @nick hiding (we have a
+    // team-chosen name now). TG-side flag is separate and drives the button.
+    const contactRow = await this.db.query.contacts.findFirst({
+      where: (c, { eq }) => eq(c.clientId, chat.client.id),
+      columns: { id: true },
+    })
+    const hasCrmContact = !!contactRow
+
     // Fetch the 50 MOST RECENT messages, then reverse to chronological order
     // (oldest at top, newest at bottom — typical chat display).
     const recent = await this.db.query.messages.findMany({
@@ -602,7 +683,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       limit: 50,
     })
 
-    return { ...chat, messages: recent.reverse() }
+    return {
+      ...chat,
+      hasCrmContact,
+      inTelegramContacts: chat.client.inTelegramContacts ?? false,
+      messages: recent.reverse(),
+    }
   }
 
   async getMessages(chatId: string, before?: string) {

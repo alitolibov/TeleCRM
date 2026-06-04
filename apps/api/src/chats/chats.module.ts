@@ -27,6 +27,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       { name: REDIS_QUEUES.tgIncomingEdited },
       { name: REDIS_QUEUES.tgIncomingDeleted },
       { name: REDIS_QUEUES.tgIdRemap },
+      { name: REDIS_QUEUES.tgClientRefresh },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],

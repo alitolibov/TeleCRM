@@ -26,6 +26,10 @@
           <i class="pi pi-flag text-base" />
           Результаты
         </NuxtLink>
+        <NuxtLink to="/contacts" class="nav-item" :class="{ 'nav-active': route.path === '/contacts' }">
+          <i class="pi pi-address-book text-base" />
+          Контакты
+        </NuxtLink>
 
         <span class="text-[11px] font-semibold text-surface-400 uppercase tracking-widest px-2.5 py-2 mt-2">Управление</span>
         <NuxtLink v-if="user?.role === 'admin'" to="/employees" class="nav-item" :class="{ 'nav-active': route.path === '/employees' }">

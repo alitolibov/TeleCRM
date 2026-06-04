@@ -54,3 +54,34 @@ export interface TgDeleteJob {
   /** revoke=true → delete for everyone; false → only on our side (rarely useful). */
   revoke: boolean
 }
+
+export interface TgAddContactJob {
+  /** Telegram user id of the contact — required so TDLib can target the right account. */
+  userId: number
+  /** Phone in E.164 (e.g. "+998901234567"). Empty when we only know the user id; TDLib
+   *  needs a phone to actually create the contact, so an empty value is best-effort only. */
+  phoneNumber: string
+  firstName: string
+  lastName: string
+}
+
+/**
+ * Ask the worker for a fresh profile snapshot — used by the API when it has
+ * to render a client whose `phone` is null but who may have un-hidden their
+ * number since the last incoming message.
+ */
+export interface TgClientRefreshRequest {
+  telegramId: number
+  /** If known, used to force a server-side refresh via searchPublicChat —
+   *  without that, TDLib happily returns its stale local snapshot, even
+   *  after the client changed their phone-visibility setting. */
+  username?: string
+}
+
+export interface TgClientRefreshResponse {
+  firstName?: string
+  lastName?: string
+  username?: string
+  phone?: string
+  isContact?: boolean
+}

@@ -3,7 +3,7 @@ import type { Job } from 'bullmq'
 import type { TgHistoryRequestJob, TgHistoryResponse, TgMessageEvent } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
-import { getTgUser, parseContent } from './messages.js'
+import { getTgUser, parseContent, toClientSnapshot } from './messages.js'
 
 function buildRedisConnection() {
   const url = new URL(config.redis.url)
@@ -66,12 +66,7 @@ export function setupHistoryWorker(client: any) {
           chatId: msg.chat_id,
           messageId: msg.id,
           isOutgoing: !!msg.is_outgoing,
-          client: {
-            telegramId: chatId,
-            firstName: user.first_name || 'Unknown',
-            lastName: user.last_name || undefined,
-            username: user.usernames?.active_usernames?.[0] ?? user.username ?? undefined,
-          },
+          client: toClientSnapshot(user, chatId),
           content: parseContent(msg.content),
           date: msg.date,
         })

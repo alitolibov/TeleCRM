@@ -10,6 +10,7 @@ import { NotificationsModule } from './notifications/notifications.module'
 import { SettingsModule } from './settings/settings.module'
 import { QuickRepliesModule } from './quick-replies/quick-replies.module'
 import { FavoritesModule } from './favorites/favorites.module'
+import { ContactsModule } from './contacts/contacts.module'
 import { ReportsModule } from './reports/reports.module'
 import { LogsModule } from './logs/logs.module'
 import { ConnectionMonitorModule } from './connection-monitor/connection-monitor.module'
@@ -35,6 +36,7 @@ import { HealthController } from './health.controller'
     SettingsModule,
     QuickRepliesModule,
     FavoritesModule,
+    ContactsModule,
     ReportsModule,
     LogsModule,
     ConnectionMonitorModule,

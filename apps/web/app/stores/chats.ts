@@ -4,6 +4,9 @@ export interface ChatClient {
   firstName: string
   lastName?: string
   username?: string
+  /** E.164. Stored once we ever see it from TDLib; doesn't disappear if the
+   *  client later hides it again. */
+  phone?: string | null
 }
 
 export interface ChatMessage {
@@ -33,6 +36,14 @@ export interface Chat {
   /** UUID of the manager who owns this chat (mirrors backend `assignedTo`). */
   assignedTo?: string | null
   assignedUser?: { id: string; firstName: string; username: string } | null
+  /** CRM has a `contacts` row for this client → header/sidebar drop the @nick
+   *  in favour of the team-chosen name. */
+  hasCrmContact?: boolean
+  /** The CRM-account's Telegram has this user in its address book → the
+   *  sidebar button shows "В контактах" instead of "Добавить в контакты".
+   *  Set independently of `hasCrmContact` so deleting the contact in TG
+   *  (or pre-existing TG contacts) flip the button correctly. */
+  inTelegramContacts?: boolean
   messages?: ChatMessage[]
   lastMessage?: ChatMessage | null
 }

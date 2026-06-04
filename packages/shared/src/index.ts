@@ -16,6 +16,8 @@ export const REDIS_QUEUES = {
   tgIncomingEdited: 'tg-incoming-edited',
   tgIncomingDeleted: 'tg-incoming-deleted',
   tgIdRemap: 'tg-id-remap',
+  tgAddContact: 'tg-add-contact',
+  tgClientRefresh: 'tg-client-refresh',
 } as const
 
 export type {
@@ -37,4 +39,7 @@ export type {
   TgFileResponse,
   TgEditJob,
   TgDeleteJob,
+  TgAddContactJob,
+  TgClientRefreshRequest,
+  TgClientRefreshResponse,
 } from './jobs.js'
