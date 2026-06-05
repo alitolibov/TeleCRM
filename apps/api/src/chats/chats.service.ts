@@ -1474,14 +1474,60 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       unreadCount: 0,
     })
 
-    // Closing a chat frees the closer's "one active slot" — hand them the
-    // next queued chat right away (round-robin will naturally pick them since
-    // they're now the only idle online user, or the longest-idle one).
-    this.distributeQueuedChats().catch((e) =>
-      console.error('[api] distribute after close failed:', e),
-    )
+    // Close → drain. Two-step on purpose:
+    //   1. `handOneToCloser` guarantees the closer gets ONE chat back —
+    //      even if they're above cap. Admins frequently end up over the
+    //      cap via manual claims (maybeAdminTakeover) and would otherwise
+    //      have to close several chats before round-robin re-eligibles
+    //      them. That breaks the "close one, get one" mental model.
+    //   2. `distributeQueuedChats` then handles everyone else by the
+    //      normal cap-respecting round-robin (so other online employees
+    //      with capacity still get their share).
+    ;(async () => {
+      await this.handOneToCloser(userId).catch((e) =>
+        console.error('[api] hand-one-to-closer failed:', e),
+      )
+      await this.distributeQueuedChats().catch((e) =>
+        console.error('[api] distribute after close failed:', e),
+      )
+    })()
 
     return chat
+  }
+
+  /**
+   * Hand the next queued chat (live, ownerless, highest priority) to a
+   * specific user, bypassing the per-user cap. Used as the post-close
+   * feedback loop: closing a chat earns the closer one back from the queue
+   * regardless of their current load. Returns silently when there's
+   * nothing in the queue, the user is missing, or already soft-deleted.
+   */
+  private async handOneToCloser(closerUserId: string): Promise<void> {
+    // Skip the `status='online'` check on purpose — closing a chat is
+    // itself proof the user is live; the DB presence row may lag a beat.
+    const closer = await this.db.query.users.findFirst({
+      where: (u, { and, eq, isNull }) => and(eq(u.id, closerUserId), isNull(u.deletedAt)),
+      columns: { id: true, firstName: true, username: true },
+    })
+    if (!closer) return
+
+    const next = await this.db.query.chats.findFirst({
+      where: (c, { isNull, ne, and }) => and(isNull(c.assignedTo), ne(c.status, 'closed')),
+      orderBy: (c, { asc, sql }) => [
+        sql`(${c.unreadCount} > 0) desc`,
+        sql`${c.lastMessageAt} desc nulls last`,
+        asc(c.createdAt),
+      ],
+    })
+    if (!next) return
+
+    await this.autoAssignChat(next.id, closerUserId, 'after_close')
+    this.gateway?.emitChatUpdated({
+      id: next.id,
+      assignedTo: closerUserId,
+      assignedUser: { id: closer.id, firstName: closer.firstName, username: closer.username },
+    })
+    console.log(`[api] post-close: handed chat ${next.id} → ${closerUserId}`)
   }
 
   async getClientInfo(chatId: string) {
