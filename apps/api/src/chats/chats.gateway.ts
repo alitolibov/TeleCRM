@@ -87,6 +87,20 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.emit('message:status', payload)
   }
 
+  /** Client read our outgoing messages — frontend flips ✓ → ✓✓ on every id
+   *  in the list. We emit ids rather than re-computing on the frontend so the
+   *  client never has to know about telegram_message_id ordering. */
+  emitOutboxRead(payload: { chatId: string; ids: string[]; readAt: string }) {
+    this.server.emit('chat:outbox-read', payload)
+  }
+
+  /** Typing / recording / uploading indicator — short-lived, high-frequency.
+   *  Frontend auto-clears the indicator if no fresh action arrives within a
+   *  few seconds, matching Telegram's own behaviour. */
+  emitChatAction(payload: { chatId: string; action: string }) {
+    this.server.emit('chat:action', payload)
+  }
+
   /** Emit an event only to specific users' rooms (e.g. escalation alerts). */
   emitToUsers(userIds: string[], event: string, payload: unknown) {
     for (const id of userIds) this.server.to(`user:${id}`).emit(event, payload)

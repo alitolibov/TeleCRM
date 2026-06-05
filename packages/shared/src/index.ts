@@ -22,6 +22,9 @@ export const REDIS_QUEUES = {
   tgForward: 'tg-forward',
   tgChatSearch: 'tg-chat-search',
   tgIncomingPinned: 'tg-incoming-pinned',
+  tgUserStatus: 'tg-user-status',
+  tgOutboxRead: 'tg-outbox-read',
+  tgChatAction: 'tg-chat-action',
 } as const
 
 export type {
@@ -34,6 +37,11 @@ export type {
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
   TgMessagePinnedEvent,
+  TgUserOnlineStatus,
+  TgUserStatusEvent,
+  TgOutboxReadEvent,
+  TgChatAction,
+  TgChatActionEvent,
 } from './events.js'
 export type {
   TgOutgoingJob,

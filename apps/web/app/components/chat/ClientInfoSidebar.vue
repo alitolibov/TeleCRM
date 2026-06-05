@@ -1,12 +1,24 @@
 <script setup lang="ts">
 import type { Chat } from '~/stores/chats'
 import AddContactDialog, { type AddContactPayload } from '~/components/chat/dialogs/AddContactDialog.vue'
+import ClientMediaTab from '~/components/chat/ClientMediaTab.vue'
 import { avatarColor, initials } from '~/utils/format'
 
 const props = defineProps<{
   chat: Chat
   info: any | null
 }>()
+
+const emit = defineEmits<{
+  /** Jump to a specific message in (potentially) a different chat of this client. */
+  (e: 'open-message', payload: { chatId: string; messageId: string }): void
+}>()
+
+// "Инфо" by default; resets to it each time the chat changes so navigating to
+// another client doesn't strand the user on a "Медиа" tab that's still loading.
+type Tab = 'info' | 'media'
+const tab = ref<Tab>('info')
+watch(() => props.chat.id, () => { tab.value = 'info' })
 
 // === Saved-contact state for the current chat's client ===
 // One in-flight request per chat-switch; the row is refreshed after add/edit
@@ -37,9 +49,11 @@ const contactBtnClass = computed(() => {
 async function refreshContact(clientId: string) {
   contactLoading.value = true
   try {
+    // Server answers `null` (with 200) when the client isn't a saved
+    // contact — see /contacts/by-client. No 404 noise in dev tools.
     contact.value = await api(`/contacts/by-client/${clientId}`)
-  } catch {
-    // 404 = not a contact yet — exactly what the button needs to know.
+  } catch (e) {
+    console.error('[contacts] status probe failed', e)
     contact.value = null
   } finally {
     contactLoading.value = false
@@ -163,8 +177,31 @@ function formatDateTime(iso: string | null | undefined) {
       </button>
     </div>
 
-    <div class="info-divider" />
+    <!-- Tab switcher -->
+    <div class="tab-bar">
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ 'tab-btn-active': tab === 'info' }"
+        @click="tab = 'info'"
+      >Инфо</button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ 'tab-btn-active': tab === 'media' }"
+        @click="tab = 'media'"
+      >Медиа</button>
+    </div>
 
+    <!-- Media tab: photos & videos from every chat with this client -->
+    <ClientMediaTab
+      v-if="tab === 'media'"
+      :chat-id="chat.id"
+      @open="(p) => emit('open-message', p)"
+    />
+
+    <!-- Info tab content (default) -->
+    <template v-else>
     <!-- Info block -->
     <div class="px-5 py-4">
       <div class="info-title">Информация</div>
@@ -273,6 +310,7 @@ function formatDateTime(iso: string | null | undefined) {
         </li>
       </ul>
     </div>
+    </template>
   </aside>
 
   <AddContactDialog
@@ -321,4 +359,29 @@ function formatDateTime(iso: string | null | undefined) {
 .contact-action-crm:hover { background: var(--p-surface-200); }
 .contact-action i { font-size: 13px; }
 .contact-action-edit { opacity: 0.55; margin-left: 2px; }
+
+.tab-bar {
+  display: flex;
+  border-top: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
+  background: var(--p-surface-0);
+}
+.tab-btn {
+  flex: 1;
+  padding: 11px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--p-surface-500);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.tab-btn:hover { background: var(--p-surface-50); color: var(--p-surface-700); }
+.tab-btn-active {
+  color: var(--p-primary-color);
+  border-bottom-color: var(--p-primary-color);
+}
+.tab-btn-active:hover { background: transparent; color: var(--p-primary-color); }
 </style>

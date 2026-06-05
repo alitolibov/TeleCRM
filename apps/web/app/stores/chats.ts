@@ -1,3 +1,8 @@
+/** Same bucket set the API stores (mirrors TDLib's UserStatus types). */
+export type ClientOnlineStatus =
+  | 'online' | 'offline' | 'recently'
+  | 'last_week' | 'last_month' | 'long_ago' | 'empty'
+
 export interface ChatClient {
   id: string
   telegramId: number
@@ -7,6 +12,10 @@ export interface ChatClient {
   /** E.164. Stored once we ever see it from TDLib; doesn't disappear if the
    *  client later hides it again. */
   phone?: string | null
+  /** Latest known online-status bucket from TDLib. Null = never seen yet. */
+  onlineStatus?: ClientOnlineStatus | null
+  /** Precise last-seen ISO timestamp — only set when status === 'offline'. */
+  lastSeenAt?: string | null
 }
 
 export interface ChatMessage {
@@ -19,6 +28,9 @@ export interface ChatMessage {
   contentType: string
   content: any
   isRead: boolean
+  /** Set when the OTHER side read this outgoing message (TDLib outbox-read).
+   *  Drives the ✓ → ✓✓ flip in MessageBubble for every content type. */
+  readAt?: string | null
   /** Delivery state for outgoing messages: queued → confirmed by Telegram. */
   status?: 'sending' | 'sent' | 'failed'
   createdAt: string
@@ -136,7 +148,13 @@ export const useChatsStore = defineStore('chats', () => {
     // Existing visible chat — merge fields and replace in array for reactivity.
     const isActive = activeChat.value?.id === data.id
     const overrides = isActive && data.unreadCount !== undefined ? { unreadCount: 0 } : {}
-    const merged = { ...data, ...overrides }
+    const merged: Partial<Chat> = { ...data, ...overrides }
+    // Client patches come through partial — the API only sends what changed
+    // (e.g. just `onlineStatus`). Deep-merge so we don't blow away the
+    // existing first/last name when the patch only carries presence fields.
+    if (data.client && existing.client) {
+      merged.client = { ...existing.client, ...data.client } as ChatClient
+    }
     chats.value = chats.value.map(c => c.id === data.id ? ({ ...c, ...merged } as Chat) : c)
     if (isActive) activeChat.value = { ...activeChat.value, ...merged } as Chat
   }
@@ -195,11 +213,89 @@ export const useChatsStore = defineStore('chats', () => {
     return fresh.length
   }
 
+  /** Insert arbitrary messages anywhere in the list (jump-to-message context).
+   *  Sorted chronologically; duplicates by id are dropped. Returns count added. */
+  function mergeMessages(msgs: ChatMessage[]) {
+    if (msgs.length === 0) return 0
+    const existing = new Set(messages.value.map(m => m.id))
+    const fresh = msgs.filter(m => !existing.has(m.id))
+    if (fresh.length === 0) return 0
+    const merged = [...messages.value, ...fresh]
+    merged.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    messages.value = merged
+    return fresh.length
+  }
+
+  /** The other side read our outgoing messages — flip ✓ → ✓✓ in the local
+   *  message list for whatever ids are in the payload. */
+  function handleOutboxRead(payload: { chatId: string; ids: string[]; readAt: string }) {
+    if (activeChat.value?.id !== payload.chatId) return
+    const idSet = new Set(payload.ids)
+    if (idSet.size === 0) return
+    messages.value = messages.value.map(m =>
+      idSet.has(m.id) ? { ...m, readAt: payload.readAt } : m,
+    )
+  }
+
+  // === Typing / chat-action state ===
+  // Per-chat current action with an auto-expiry timestamp. We don't trust
+  // TDLib to always emit `cancel` — and even when it does, frequent typing
+  // events overlap with end-of-action events. A 6-second window matches the
+  // ~5 s cadence TDLib uses while typing is ongoing.
+  type ChatActionEntry = { action: string; until: number }
+  const chatActions = ref<Record<string, ChatActionEntry>>({})
+  // Reactive "now" tick so the header's typing label disappears the moment
+  // its expiry passes, even without a new event. Only ticks while at least
+  // one chat is active.
+  const nowMs = ref(Date.now())
+  let tickHandle: ReturnType<typeof setInterval> | null = null
+  function ensureTick() {
+    if (tickHandle) return
+    tickHandle = setInterval(() => {
+      nowMs.value = Date.now()
+      // Garbage-collect expired entries so the object doesn't grow forever.
+      const active: Record<string, ChatActionEntry> = {}
+      let changed = false
+      for (const [id, e] of Object.entries(chatActions.value)) {
+        if (e.until > nowMs.value) active[id] = e
+        else changed = true
+      }
+      if (changed) chatActions.value = active
+      if (Object.keys(active).length === 0) {
+        clearInterval(tickHandle!)
+        tickHandle = null
+      }
+    }, 1000)
+  }
+
+  function handleChatAction(payload: { chatId: string; action: string }) {
+    if (payload.action === 'cancel') {
+      const { [payload.chatId]: _, ...rest } = chatActions.value
+      chatActions.value = rest
+      return
+    }
+    chatActions.value = {
+      ...chatActions.value,
+      [payload.chatId]: { action: payload.action, until: Date.now() + 6000 },
+    }
+    ensureTick()
+  }
+
+  /** Live typing/uploading action for a chat, expiring with `nowMs`. */
+  function actionFor(chatId: string | null | undefined): string | null {
+    if (!chatId) return null
+    const entry = chatActions.value[chatId]
+    if (!entry) return null
+    if (entry.until <= nowMs.value) return null
+    return entry.action
+  }
+
   return {
     chats, activeChat, messages, totalUnread,
     setChats, appendChats, setActiveChat, markActiveChatRead,
     handleNewMessage, handleChatUpdated, handleNewChat,
     handleMessageEdited, handleMessagesDeleted, handleMessageStatus,
-    addMessage, prependMessages,
+    handleOutboxRead, handleChatAction, actionFor,
+    addMessage, prependMessages, mergeMessages,
   }
 })

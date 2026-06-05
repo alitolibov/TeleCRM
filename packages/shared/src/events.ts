@@ -77,6 +77,44 @@ export interface TgMessagePinnedEvent {
   isPinned: boolean
 }
 
+/** TDLib UserStatus bucket — what we surface in the chat header subline.
+ *   · 'online'      → currently online (TDLib emits an `expires` we don't
+ *                     bother tracking; the next status update flips it).
+ *   · 'offline'     → precise last-seen time available (was_online unix).
+ *   · 'recently'    → "был(а) недавно" — privacy bucket, no timestamp.
+ *   · 'last_week'   → within the last week, bucket.
+ *   · 'last_month'  → within the last month, bucket.
+ *   · 'long_ago'    → "был(а) давно".
+ *   · 'empty'       → status hidden entirely. */
+export type TgUserOnlineStatus =
+  | 'online' | 'offline' | 'recently'
+  | 'last_week' | 'last_month' | 'long_ago' | 'empty'
+
+export interface TgUserStatusEvent {
+  userId: number              // telegram user id
+  status: TgUserOnlineStatus
+  /** Unix seconds of last-seen — only set when `status === 'offline'`. */
+  lastSeenAt?: number
+}
+
+/** TDLib's updateChatReadOutbox — the OTHER side read our outgoing messages
+ *  up to `lastReadMessageId`. Drives the ✓ → ✓✓ flip in MessageBubble. */
+export interface TgOutboxReadEvent {
+  chatId: number              // telegram chat id
+  lastReadMessageId: number   // every outgoing message with id ≤ this is read
+}
+
+/** TDLib's chat-action / user-chat-action — typing & related indicators. */
+export type TgChatAction =
+  | 'typing' | 'photo' | 'video' | 'voice' | 'video_note'
+  | 'document' | 'sticker' | 'location' | 'contact' | 'game'
+
+export interface TgChatActionEvent {
+  chatId: number
+  /** 'cancel' means the user stopped — frontend should clear the indicator. */
+  action: TgChatAction | 'cancel'
+}
+
 /**
  * Fired by TDLib after our outgoing message has been successfully delivered —
  * at this point its message id changes from a temporary one (seen earlier via

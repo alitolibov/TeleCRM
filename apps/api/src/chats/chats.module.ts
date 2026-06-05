@@ -11,6 +11,9 @@ import {
   ChatsDeletedProcessor,
   ChatsIdRemapProcessor,
   ChatsPinnedProcessor,
+  ChatsUserStatusProcessor,
+  ChatsOutboxReadProcessor,
+  ChatsActionProcessor,
 } from './chats.processor'
 import { ChatsGateway } from './chats.gateway'
 import { NotificationsModule } from '../notifications/notifications.module'
@@ -34,6 +37,9 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       { name: REDIS_QUEUES.tgForward },
       { name: REDIS_QUEUES.tgChatSearch },
       { name: REDIS_QUEUES.tgIncomingPinned },
+      { name: REDIS_QUEUES.tgUserStatus },
+      { name: REDIS_QUEUES.tgOutboxRead },
+      { name: REDIS_QUEUES.tgChatAction },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -54,6 +60,9 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     ChatsDeletedProcessor,
     ChatsIdRemapProcessor,
     ChatsPinnedProcessor,
+    ChatsUserStatusProcessor,
+    ChatsOutboxReadProcessor,
+    ChatsActionProcessor,
     ChatsGateway,
   ],
   exports: [ChatsService, ChatsGateway],

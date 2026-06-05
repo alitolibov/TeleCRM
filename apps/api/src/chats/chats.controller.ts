@@ -60,6 +60,30 @@ export class ChatsController {
     return this.chatsService.getMessages(id, before)
   }
 
+  /** Photo/video messages from every chat this client has ever had with us. */
+  @Get(':id/media')
+  getClientMedia(
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.chatsService.getClientMedia(
+      id,
+      limit ? Number(limit) : 60,
+      offset ? Number(offset) : 0,
+    )
+  }
+
+  /** N messages around a given message (for "jump-to-message" deep links). */
+  @Get(':id/messages/around/:messageId')
+  getMessagesAround(
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.chatsService.getMessagesAround(id, messageId, limit ? Number(limit) : 30)
+  }
+
   @Patch(':id/assign')
   assign(@Param('id') id: string, @CurrentUser() user: { id: string }) {
     return this.chatsService.assign(id, user.id)

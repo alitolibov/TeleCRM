@@ -170,8 +170,13 @@ function onNotify(p: { type: 'escalation' | 'transfer' | 'system'; title: string
   })
 }
 
+const { requestOpen: requestOpenChat } = useChatNavigation()
+
 function openChatFromNotification(chatId: string) {
   navigateTo({ path: '/', query: { chat: chatId } })
+  // Force the page to react even if /?chat=<id> already matched (the router
+  // skips identical queries, leaving "Открыть чат" silently dead otherwise).
+  requestOpenChat(chatId)
 }
 
 onMounted(async () => {

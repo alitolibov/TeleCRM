@@ -171,7 +171,12 @@
       <p class="text-sm">Выберите чат, чтобы начать переписку</p>
     </main>
 
-    <ClientInfoSidebar v-if="activeChat && !isFavorites" :chat="activeChat" :info="clientInfo" />
+    <ClientInfoSidebar
+      v-if="activeChat && !isFavorites"
+      :chat="activeChat"
+      :info="clientInfo"
+      @open-message="openMessageFromSidebar"
+    />
 
     <!-- "Clear favorites" confirmation — irreversible, so a hard-stop dialog
          rather than a quiet toast undo. -->
@@ -829,13 +834,45 @@ function findReplyTarget(msg: { chatId?: string; replyToTgId?: number | null; co
   return messages.value.find(m => m.telegramMessageId === msg.replyToTgId) ?? null
 }
 
-/** Smooth-scroll to a message in the list when its reply quote is clicked. */
-function jumpToMessage(messageId: string) {
-  const el = document.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null
+/** Smooth-scroll to a message in the list. If the message isn't in the DOM
+ *  yet (older history or jumped-to from the media tab), pull a context window
+ *  from the server first, then scroll + flash. */
+async function jumpToMessage(messageId: string) {
+  let el = document.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null
+
+  if (!el) {
+    const chatId = activeChat.value?.id
+    if (!chatId || chatId === FAVORITES_CHAT_ID) return
+    try {
+      const ctx = await api<ChatMessage[]>(
+        `/chats/${chatId}/messages/around/${messageId}?limit=30`,
+      )
+      const store = useChatsStore()
+      store.mergeMessages(ctx)
+      await nextTick()
+      el = document.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null
+    } catch (e) {
+      console.error('[jump] context fetch failed', e)
+      return
+    }
+  }
+
   if (!el) return
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   el.classList.add('msg-flash')
-  setTimeout(() => el.classList.remove('msg-flash'), 1200)
+  setTimeout(() => el?.classList.remove('msg-flash'), 1200)
+}
+
+/** Sidebar "Медиа" tab → click on a thumbnail. The target may live in a
+ *  different chat of the same client (closed/older), so open it first when
+ *  needed, then jump. */
+async function openMessageFromSidebar(payload: { chatId: string; messageId: string }) {
+  if (activeChat.value?.id !== payload.chatId) {
+    await handleOpenChat(payload.chatId)
+    // Wait one more tick after openChat to let the new chat's messages render.
+    await nextTick()
+  }
+  await jumpToMessage(payload.messageId)
 }
 
 async function confirmClearFavorites() {
@@ -896,6 +933,20 @@ const route = useRoute()
 watch(() => route.query.chat, (id) => {
   if (typeof id === 'string' && id && id !== activeChat.value?.id) handleOpenChat(id)
 }, { immediate: true })
+
+// Notification-click signal — fires every time, even when /?chat=<id> already
+// matches (common for "unclosed" escalations where the chat is the active one).
+// If it's a different chat, switch; if it's the same one, just scroll to bottom
+// so the user sees the latest activity.
+const { pendingOpen } = useChatNavigation()
+watch(pendingOpen, (req) => {
+  if (!req) return
+  if (req.chatId === activeChat.value?.id) {
+    scrollToBottom(true)
+  } else {
+    handleOpenChat(req.chatId)
+  }
+})
 
 onMounted(async () => {
   const token = getToken()

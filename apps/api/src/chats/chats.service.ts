@@ -17,6 +17,9 @@ import type {
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
   TgMessagePinnedEvent,
+  TgUserStatusEvent,
+  TgOutboxReadEvent,
+  TgChatActionEvent,
   TgClientRefreshRequest,
   TgClientRefreshResponse,
   TgPinJob,
@@ -220,17 +223,18 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
 
     if (!message) return // duplicate — already processed
 
-    // 4. Auto-distribute — round-robin: an incoming client message in a `new`,
-    // unowned chat goes to one idle online user (zero active chats), if any.
-    // Status stays `new` until the manager actually responds (then sendMessage
-    // flips it to `active`), so the chat list still surfaces it as "fresh".
+    // 4. Auto-distribute — round-robin: an incoming client message in ANY
+    // unowned non-closed chat goes to one idle online user (zero active chats),
+    // if any. Covers both fresh `new` chats and `active` chats returned to the
+    // queue (manual transfer to "no one", user-delete release) — both belong
+    // to the same pool that needs picking up.
     let autoAssignedTo: string | null = null
-    if (!event.isOutgoing && chat.status === 'new' && !chat.assignedTo) {
+    if (!event.isOutgoing && !chat.assignedTo && chat.status !== 'closed') {
       autoAssignedTo = await this.pickAssignee()
       if (autoAssignedTo) {
         await this.autoAssignChat(chat.id, autoAssignedTo, 'auto_distribute')
         chat = { ...chat, assignedTo: autoAssignedTo }
-        console.log(`[api] auto-distributed chat ${chat.id} → user ${autoAssignedTo}`)
+        console.log(`[api] auto-distributed chat ${chat.id} (${chat.status}) → user ${autoAssignedTo}`)
       }
     }
 
@@ -368,10 +372,25 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    * Called when a user comes online and when a chat closes.
    */
   async distributeQueuedChats(): Promise<void> {
+    // Pool = every unowned, non-closed chat: fresh `new` arrivals AND
+    // `active` chats that ended up ownerless (admin transferred to no one,
+    // owner deleted, etc.).
+    //
+    // Priority order, in tiers:
+    //   1. Chats with unread client messages first — a hot conversation
+    //      shouldn't wait behind a long-silent one.
+    //   2. Within that, most-recent last_message_at first so the chat that
+    //      just woke up jumps the queue.
+    //   3. Tie-break by `createdAt` ASC so identical activity doesn't make
+    //      one chat starve.
     const queued = await this.db.query.chats.findMany({
-      where: (c, { eq, and, isNull }) => and(eq(c.status, 'new'), isNull(c.assignedTo)),
-      orderBy: (c, { asc }) => asc(c.createdAt),
-      limit: 50,    // safety bound
+      where: (c, { ne, and, isNull }) => and(ne(c.status, 'closed'), isNull(c.assignedTo)),
+      orderBy: (c, { asc, desc, sql }) => [
+        desc(sql`${c.unreadCount} > 0`),     // unread bucket first
+        desc(sql`${c.lastMessageAt} NULLS LAST`),
+        asc(c.createdAt),
+      ],
+      limit: 50,
     })
     if (queued.length === 0) return
 
@@ -659,6 +678,38 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Fire-and-forget wrapper around `refreshClientFromTg` for callers that
+   * want a fresh snapshot in the background without blocking the request
+   * thread. When something actually changed, we broadcast a `chat:updated`
+   * with a partial `client` patch so the open chat's sidebar/header pick up
+   * the new phone / is_contact / display name without a refetch.
+   */
+  async refreshClientFromTgInBackground(
+    chatId: string,
+    telegramId: number,
+    username?: string,
+  ) {
+    const fresh = await this.refreshClientFromTg(telegramId, username).catch(() => null)
+    if (!fresh) return
+    // Build a partial client patch with only the fields the refresh may
+    // have flipped. Phone uses COALESCE inside refreshClientFromTg, so the
+    // canonical post-refresh value is what's in the DB now.
+    const updatedClient = await this.db.query.clients.findFirst({
+      where: (c, { eq }) => eq(c.telegramId, telegramId),
+      columns: { phone: true, inTelegramContacts: true, username: true },
+    })
+    if (!updatedClient) return
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      client: {
+        phone: updatedClient.phone,
+        inTelegramContacts: updatedClient.inTelegramContacts,
+        username: updatedClient.username,
+      },
+    } as any)
+  }
+
+  /**
    * Pin or unpin a message in the client's TG chat (visible to the client too).
    * Server-side translation: chat uuid → telegram chat id, message uuid →
    * telegram message id, then enqueue. Errors bubble up so the API returns 4xx
@@ -811,24 +862,17 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       )
     }
 
-    // Always ask the worker for a fresh TDLib snapshot — phone and is_contact
-    // can both change between messages and we want the sidebar to reflect
-    // reality. Short budget so it never holds the open noticeably; on timeout
-    // we just render the cached state.
-    const fresh = await this.refreshClientFromTg(
+    // Background TDLib refresh — phone / is_contact / online-status all
+    // change without explicit triggers, so we still want to ask. We DON'T
+    // wait for it on the request thread: that openChat + searchPublicChat
+    // + getUser dance takes 1-2 s and was the single biggest cause of the
+    // "chat takes forever to open" UX. The frontend receives the fresh
+    // fields via `chat:updated` WS when the round-trip lands.
+    void this.refreshClientFromTgInBackground(
+      chat.id,
       chat.client.telegramId,
       chat.client.username ?? undefined,
-    ).catch(() => null)
-    if (fresh) {
-      chat = {
-        ...chat,
-        client: {
-          ...chat.client,
-          phone: fresh.phone ?? chat.client.phone,
-          inTelegramContacts: fresh.isContact ?? chat.client.inTelegramContacts,
-        },
-      }
-    }
+    )
 
     // CRM-side "saved contact" row → drives the @nick hiding (we have a
     // team-chosen name now). TG-side flag is separate and drives the button.
@@ -870,6 +914,80 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       limit: 50,
     })
     return rows.map((m) => this.normalizeForwardedFrom(m))
+  }
+
+  /**
+   * All photo/video messages across every chat this client has ever had with
+   * us. Used by the client-card "Медиа" tab. Paginated by created_at so the
+   * grid can lazy-load on scroll. Each row carries its own chatId so the
+   * sidebar can jump straight to the original message in the right chat.
+   */
+  async getClientMedia(chatId: string, limit = 60, offset = 0) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      columns: { clientId: true },
+    })
+    if (!chat) throw new NotFoundException('Chat not found')
+
+    const rows = await this.db
+      .select({
+        id: schema.messages.id,
+        chatId: schema.messages.chatId,
+        content: schema.messages.content,
+        contentType: schema.messages.contentType,
+        senderType: schema.messages.senderType,
+        createdAt: schema.messages.createdAt,
+      })
+      .from(schema.messages)
+      .innerJoin(schema.chats, eq(schema.chats.id, schema.messages.chatId))
+      .where(and(
+        eq(schema.chats.clientId, chat.clientId),
+        eq(schema.messages.isDeleted, false),
+        sql`${schema.messages.contentType} IN ('photo', 'video')`,
+      ))
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(Math.min(limit, 200))
+      .offset(Math.max(offset, 0))
+    return rows
+  }
+
+  /**
+   * Loads N messages around a given message id (N/2 before, N/2 after + the
+   * message itself). Drives the "jump to message" flow when the target isn't
+   * in the loaded window yet. Returned oldest→newest so the caller can splice
+   * into the chronological store directly.
+   */
+  async getMessagesAround(chatId: string, messageId: string, limit = 30) {
+    const half = Math.floor(Math.min(limit, 100) / 2)
+    const anchor = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(eq(m.id, messageId), eq(m.chatId, chatId)),
+      columns: { id: true, createdAt: true },
+    })
+    if (!anchor) throw new NotFoundException('Message not found')
+
+    const [before, after] = await Promise.all([
+      this.db.query.messages.findMany({
+        where: (m, { eq, and, lte }) => and(
+          eq(m.chatId, chatId),
+          eq(m.isDeleted, false),
+          lte(m.createdAt, anchor.createdAt),
+        ),
+        orderBy: (m, { desc }) => desc(m.createdAt),
+        limit: half + 1,
+      }),
+      this.db.query.messages.findMany({
+        where: (m, { eq, and, gt }) => and(
+          eq(m.chatId, chatId),
+          eq(m.isDeleted, false),
+          gt(m.createdAt, anchor.createdAt),
+        ),
+        orderBy: (m, { asc }) => asc(m.createdAt),
+        limit: half,
+      }),
+    ])
+
+    const merged = [...before.reverse(), ...after]
+    return merged.map((m) => this.normalizeForwardedFrom(m))
   }
 
   /** Convert the DB row's `{ name, date(unix) }` forward snapshot into the
@@ -1946,4 +2064,113 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     } as any)
   }
 
+  /**
+   * Persist the client's TDLib online-status snapshot and surface it through
+   * the chat:updated WS so the header subline updates in real time.
+   * No-op for users we don't have in the CRM — the worker forwards every
+   * status update TDLib emits, and that's fine: the UPDATE costs ~one
+   * indexed lookup and affects zero rows for unknown telegram ids.
+   */
+  async applyUserStatus(event: TgUserStatusEvent) {
+    const lastSeenAt = event.lastSeenAt
+      ? new Date(event.lastSeenAt * 1000)
+      : null
+    const updated = await this.db
+      .update(schema.clients)
+      .set({
+        onlineStatus: event.status,
+        // Only overwrite `last_seen_at` when we got a precise stamp — bucket
+        // statuses ('recently', 'last_week', …) carry no timestamp and we'd
+        // lose the previous one by writing null.
+        ...(event.status === 'offline' ? { lastSeenAt } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.clients.telegramId, event.userId))
+      .returning({ id: schema.clients.id })
+    if (updated.length === 0) return
+
+    // One WS broadcast per chat — chats are 1:1 with private clients in our
+    // model, but we iterate just in case the data ever drifts.
+    const chats = await this.db.query.chats.findMany({
+      where: (c, { eq }) => eq(c.clientId, updated[0]!.id),
+      columns: { id: true },
+    })
+    const clientPatch = {
+      onlineStatus: event.status,
+      lastSeenAt: event.status === 'offline' && lastSeenAt
+        ? lastSeenAt.toISOString()
+        : null,
+    }
+    for (const chat of chats) {
+      this.gateway?.emitChatUpdated({
+        id: chat.id,
+        client: clientPatch,
+      } as any)
+    }
+  }
+
+  /**
+   * The other side read our outgoing messages up to `lastReadMessageId`.
+   * Flip every still-unread manager message in that range to read, then push
+   * the affected CRM ids over WS so the bubble ✓ becomes ✓✓ instantly.
+   */
+  async applyOutboxRead(event: TgOutboxReadEvent) {
+    const client = await this.db.query.clients.findFirst({
+      where: (c, { eq }) => eq(c.telegramId, event.chatId),
+      columns: { id: true },
+    })
+    if (!client) return
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.clientId, client.id),
+      orderBy: (c, { desc }) => desc(c.createdAt),
+      columns: { id: true },
+    })
+    if (!chat) return
+
+    const now = new Date()
+    const updated = await this.db
+      .update(schema.messages)
+      .set({ readAt: now })
+      .where(and(
+        eq(schema.messages.chatId, chat.id),
+        eq(schema.messages.senderType, 'manager'),
+        isNull(schema.messages.readAt),
+        sql`${schema.messages.telegramMessageId} <= ${event.lastReadMessageId}`,
+      ))
+      .returning({ id: schema.messages.id })
+
+    if (updated.length === 0) return
+    this.gateway?.emitOutboxRead({
+      chatId: chat.id,
+      ids: updated.map((r) => r.id),
+      readAt: now.toISOString(),
+    })
+  }
+
+  /**
+   * Forward the chat-action ("typing", "uploading photo", …) straight to the
+   * frontend. Stateless on the API side: we don't persist or rate-limit; the
+   * frontend keeps a 6-second auto-expire window per chat that swallows the
+   * normal TDLib re-emit cadence (every 4–5 s while the action is ongoing).
+   */
+  async applyChatAction(event: TgChatActionEvent) {
+    const client = await this.db.query.clients.findFirst({
+      where: (c, { eq }) => eq(c.telegramId, event.chatId),
+      columns: { id: true },
+    })
+    if (!client) return
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.clientId, client.id),
+      orderBy: (c, { desc }) => desc(c.createdAt),
+      columns: { id: true },
+    })
+    if (!chat) return
+
+    this.gateway?.emitChatAction({
+      chatId: chat.id,
+      action: event.action,
+    })
+  }
 }

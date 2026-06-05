@@ -309,6 +309,15 @@ export function useChats() {
       if (document.visibilityState === 'visible') fullRefetch('60s poll')
     }, 60_000)
 
+    // Read receipts + typing — direct passthrough to the store, no extra
+    // logic needed: the store owns the auto-expiry tick and the deep merge.
+    const onOutboxRead = (p: { chatId: string; ids: string[]; readAt: string }) => {
+      store.handleOutboxRead(p)
+    }
+    const onChatAction = (p: { chatId: string; action: string }) => {
+      store.handleChatAction(p)
+    }
+
     on('connect', onConnect)
     on('message:new', onNewMessage)
     on('chat:updated', onChatUpdated)
@@ -316,6 +325,8 @@ export function useChats() {
     on('message:edited', onMessageEdited)
     on('message:deleted', onMessagesDeleted)
     on('message:status', onMessageStatus)
+    on('chat:outbox-read', onOutboxRead)
+    on('chat:action', onChatAction)
     document.addEventListener('visibilitychange', onVisibility)
 
     onUnmounted(() => {
@@ -328,6 +339,8 @@ export function useChats() {
       off('message:edited', onMessageEdited)
       off('message:deleted', onMessagesDeleted)
       off('message:status', onMessageStatus)
+      off('chat:outbox-read', onOutboxRead)
+      off('chat:action', onChatAction)
       document.removeEventListener('visibilitychange', onVisibility)
     })
   }

@@ -7,6 +7,9 @@ import type {
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
   TgMessagePinnedEvent,
+  TgUserStatusEvent,
+  TgOutboxReadEvent,
+  TgChatActionEvent,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { ChatsService } from './chats.service'
@@ -74,5 +77,38 @@ export class ChatsPinnedProcessor extends WorkerHost {
 
   async process(job: Job<TgMessagePinnedEvent>): Promise<void> {
     await this.chatsService.applyExternalPin(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgUserStatus)
+export class ChatsUserStatusProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgUserStatusEvent>): Promise<void> {
+    await this.chatsService.applyUserStatus(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgOutboxRead)
+export class ChatsOutboxReadProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgOutboxReadEvent>): Promise<void> {
+    await this.chatsService.applyOutboxRead(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgChatAction)
+export class ChatsActionProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgChatActionEvent>): Promise<void> {
+    await this.chatsService.applyChatAction(job.data)
   }
 }

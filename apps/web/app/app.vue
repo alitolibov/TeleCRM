@@ -46,10 +46,17 @@ function toastIcon(severity?: string) {
   return 'pi pi-bell'
 }
 
+const { requestOpen } = useChatNavigation()
+
 function onToastClick(message: { data?: { chatId?: string } }, close?: () => void) {
   const chatId = message.data?.chatId
   if (!chatId) return
+  // Always navigate so a /settings → / round-trip lands at the right URL.
   navigateTo({ path: '/', query: { chat: chatId } })
+  // Signal the page directly too — if /?chat=ID is already the URL (common for
+  // "unclosed" escalations where the chat is already open), the router
+  // wouldn't fire any watcher, so the page would otherwise sit idle.
+  requestOpen(chatId)
   close?.()
 }
 </script>

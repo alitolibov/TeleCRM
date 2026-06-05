@@ -7,6 +7,11 @@ import type {
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
   TgMessagePinnedEvent,
+  TgUserStatusEvent,
+  TgUserOnlineStatus,
+  TgOutboxReadEvent,
+  TgChatActionEvent,
+  TgChatAction,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
@@ -44,6 +49,25 @@ const idRemapQueue = new Queue<TgMessageIdRemapEvent>(REDIS_QUEUES.tgIdRemap, {
 const pinnedQueue = new Queue<TgMessagePinnedEvent>(REDIS_QUEUES.tgIncomingPinned, {
   connection: buildRedisConnection(),
   defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
+})
+
+const userStatusQueue = new Queue<TgUserStatusEvent>(REDIS_QUEUES.tgUserStatus, {
+  connection: buildRedisConnection(),
+  // High churn (TDLib fires this every few seconds per active user) — keep
+  // the visible job set tight so the queue doesn't bloat Redis.
+  defaultJobOptions: { removeOnComplete: 50, removeOnFail: 20 },
+})
+
+const outboxReadQueue = new Queue<TgOutboxReadEvent>(REDIS_QUEUES.tgOutboxRead, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
+})
+
+const chatActionQueue = new Queue<TgChatActionEvent>(REDIS_QUEUES.tgChatAction, {
+  connection: buildRedisConnection(),
+  // Even higher churn than status — keystroke-rate events. Drop completed
+  // jobs aggressively; nothing depends on history.
+  defaultJobOptions: { removeOnComplete: 20, removeOnFail: 10 },
 })
 
 const userCache = new Map<number, any>()
@@ -445,4 +469,102 @@ export function setupMessageHandler(client: any, myUserId: number) {
     )
     console.log(`[tg-worker] ${event.isPinned ? '📌' : '↺'} pin event msg ${event.messageId} in chat ${event.chatId}`)
   })
+
+  // Online presence: TDLib fires updateUserStatus for every user it knows
+  // about. We forward every positive-user-id update to the API; the API does
+  // a no-op `UPDATE … WHERE telegram_id` for users that aren't CRM clients,
+  // which is cheap enough not to require worker-side filtering.
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateUserStatus') return
+    if (typeof update.user_id !== 'number' || update.user_id <= 0) return
+    if (update.user_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.user_id)) return
+
+    const event: TgUserStatusEvent = {
+      userId: update.user_id,
+      status: mapUserStatus(update.status?._),
+      lastSeenAt: update.status?._ === 'userStatusOffline'
+        ? update.status.was_online
+        : undefined,
+    }
+    // Keep the user cache fresh too — anything that reads `getTgUser` later
+    // should know the new status without a refetch round-trip.
+    const cached = userCache.get(update.user_id)
+    if (cached) userCache.set(update.user_id, { ...cached, status: update.status })
+
+    await userStatusQueue.add('status', event).catch((e) =>
+      console.error('[tg-worker] user-status enqueue failed:', e),
+    )
+  })
+
+  // Outbox-read: the OTHER side opened our message thread and walked their
+  // read marker up to `last_read_outbox_message_id`. Drives ✓ → ✓✓ on every
+  // outgoing message at or below that id.
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateChatReadOutbox') return
+    if (update.chat_id <= 0 || update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+
+    const event: TgOutboxReadEvent = {
+      chatId: update.chat_id,
+      lastReadMessageId: update.last_read_outbox_message_id,
+    }
+    await outboxReadQueue.add('outbox-read', event).catch((e) =>
+      console.error('[tg-worker] outbox-read enqueue failed:', e),
+    )
+  })
+
+  // Chat action (typing / recording voice / uploading photo / …). TDLib's
+  // own field name changed between API versions — accept both forms. We only
+  // forward private-chat actions where the sender is the chat user themselves
+  // (the only case meaningful for the header indicator).
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateChatAction' && update._ !== 'updateUserChatAction') return
+    if (update.chat_id <= 0 || update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+    const senderUserId =
+      update.sender_id?._ === 'messageSenderUser'
+        ? update.sender_id.user_id
+        : update.user_id   // older API shape
+    if (typeof senderUserId !== 'number' || senderUserId !== update.chat_id) return
+
+    const event: TgChatActionEvent = {
+      chatId: update.chat_id,
+      action: mapChatAction(update.action?._),
+    }
+    await chatActionQueue.add('action', event).catch((e) =>
+      console.error('[tg-worker] chat-action enqueue failed:', e),
+    )
+  })
+}
+
+function mapUserStatus(kind: string | undefined): TgUserOnlineStatus {
+  switch (kind) {
+    case 'userStatusOnline':    return 'online'
+    case 'userStatusOffline':   return 'offline'
+    case 'userStatusRecently':  return 'recently'
+    case 'userStatusLastWeek':  return 'last_week'
+    case 'userStatusLastMonth': return 'last_month'
+    case 'userStatusEmpty':     return 'empty'
+    default:                    return 'long_ago'
+  }
+}
+
+function mapChatAction(kind: string | undefined): TgChatAction | 'cancel' {
+  switch (kind) {
+    case 'chatActionTyping':              return 'typing'
+    case 'chatActionUploadingPhoto':      return 'photo'
+    case 'chatActionUploadingVideo':      return 'video'
+    case 'chatActionRecordingVoiceNote':
+    case 'chatActionUploadingVoiceNote':  return 'voice'
+    case 'chatActionUploadingDocument':   return 'document'
+    case 'chatActionChoosingSticker':     return 'sticker'
+    case 'chatActionRecordingVideoNote':
+    case 'chatActionUploadingVideoNote':  return 'video_note'
+    case 'chatActionChoosingLocation':    return 'location'
+    case 'chatActionChoosingContact':     return 'contact'
+    case 'chatActionStartPlayingGame':    return 'game'
+    case 'chatActionCancel':              return 'cancel'
+    default:                              return 'cancel'
+  }
 }

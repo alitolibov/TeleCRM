@@ -12,6 +12,14 @@ export const clients = pgTable('clients', {
    *  the open-time refresh. Drives the sidebar's "В контактах" button —
    *  CRM-side `contacts` row only controls the custom name override. */
   inTelegramContacts: boolean('in_telegram_contacts').notNull().default(false),
+  /** TDLib UserStatus bucket — null until we ever see one. Valid values:
+   *  'online' | 'offline' | 'recently' | 'last_week' | 'last_month' | 'long_ago' | 'empty'.
+   *  Drives the chat header's "в сети / был(а) …" subline. */
+  onlineStatus: varchar('online_status', { length: 16 }),
+  /** Exact last-seen time (only meaningful when `online_status = 'offline'`,
+   *  comes from TDLib's `userStatusOffline.was_online`). Null for any bucket
+   *  status — those don't expose a precise timestamp. */
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

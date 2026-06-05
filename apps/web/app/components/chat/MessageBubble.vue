@@ -89,15 +89,22 @@ function toggleVideoNote(e: MouseEvent) {
 
 const isOutgoing = computed(() => props.msg.senderType === 'manager')
 
-/** Delivery indicator for our own (outgoing) messages: clock while queued/sending,
- *  check once Telegram confirms, warning on failure. Incoming → none. */
-const statusIcon = computed(() => {
+/** Delivery indicator for our own (outgoing) messages — Telegram-parity:
+ *   sending → clock
+ *   failed  → red warning
+ *   sent    → single ✓ (one server-side check, not yet read by client)
+ *   read    → double ✓✓ (client opened the message)
+ *  Incoming → none. */
+const bubbleStatus = computed<{ icons: string[]; cls: string } | null>(() => {
   if (!isOutgoing.value) return null
   switch (props.msg.status) {
-    case 'sending': return 'pi-clock'
-    case 'failed':  return 'pi-exclamation-circle'
-    case 'sent':    return 'pi-check'
-    default:        return null
+    case 'sending': return { icons: ['pi-clock'], cls: 'bubble-status-sending' }
+    case 'failed':  return { icons: ['pi-exclamation-circle'], cls: 'bubble-status-failed' }
+    case 'sent':
+    default:
+      return props.msg.readAt
+        ? { icons: ['pi-check', 'pi-check'], cls: 'bubble-status-read' }
+        : { icons: ['pi-check'], cls: 'bubble-status-sent' }
   }
 })
 
@@ -155,7 +162,7 @@ function replyPreview(target: ChatMessage): string {
     <template v-if="msg.content?.type === 'text'">
       <div class="bubble-text">
         {{ msg.content.text }}<span class="bubble-meta-inline">
-  {{ formatMessageTime(msg.createdAt) }}<i v-if="statusIcon" class="pi bubble-status" :class="[statusIcon, { 'bubble-status-failed': msg.status === 'failed' }]" /></span>
+  {{ formatMessageTime(msg.createdAt) }}<span v-if="bubbleStatus" class="bubble-status" :class="bubbleStatus.cls"><i v-for="(ic, i) in bubbleStatus.icons" :key="i" class="pi" :class="ic" /></span></span>
       </div>
     </template>
 
@@ -167,7 +174,7 @@ function replyPreview(target: ChatMessage): string {
           loading="lazy"
           class="media-img"
         />
-        <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}<i v-if="statusIcon" class="pi bubble-status" :class="[statusIcon, { 'bubble-status-failed': msg.status === 'failed' }]" /></span>
+        <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}<span v-if="bubbleStatus" class="bubble-status" :class="bubbleStatus.cls"><i v-for="(ic, i) in bubbleStatus.icons" :key="i" class="pi" :class="ic" /></span></span>
       </a>
       <div v-if="msg.content.caption" class="bubble-text mt-1.5">
         {{ msg.content.caption }}<span class="bubble-meta-inline">
@@ -201,7 +208,7 @@ function replyPreview(target: ChatMessage): string {
           <i class="pi pi-play" />
         </button>
         <span class="video-msg-duration">{{ formatVideoDuration(msg.content.duration) }}</span>
-        <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}<i v-if="statusIcon" class="pi bubble-status" :class="[statusIcon, { 'bubble-status-failed': msg.status === 'failed' }]" /></span>
+        <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}<span v-if="bubbleStatus" class="bubble-status" :class="bubbleStatus.cls"><i v-for="(ic, i) in bubbleStatus.icons" :key="i" class="pi" :class="ic" /></span></span>
         <div class="video-msg-bar" @click.stop="onVideoSeek" @mousedown.stop>
           <div class="video-msg-bar-fill" />
         </div>
@@ -250,7 +257,7 @@ function replyPreview(target: ChatMessage): string {
   {{ formatMessageTime(msg.createdAt) }}
 </span>
       </div>
-      <span v-if="!msg.content.caption" class="bubble-meta">{{ formatMessageTime(msg.createdAt) }}<i v-if="statusIcon" class="pi bubble-status" :class="[statusIcon, { 'bubble-status-failed': msg.status === 'failed' }]" /></span>
+      <span v-if="!msg.content.caption" class="bubble-meta">{{ formatMessageTime(msg.createdAt) }}<span v-if="bubbleStatus" class="bubble-status" :class="bubbleStatus.cls"><i v-for="(ic, i) in bubbleStatus.icons" :key="i" class="pi" :class="ic" /></span></span>
     </template>
 
     <template v-else-if="msg.content?.type === 'sticker'">
@@ -274,13 +281,26 @@ function replyPreview(target: ChatMessage): string {
 
 <style>
 /* Delivery status icon next to the timestamp (outgoing only). */
+/* Delivery indicator wrapper — one or two icons depending on sending/sent/read.
+   The wrapper is a span so we can render the second ✓ overlapping the first
+   for the read state (✓✓), matching Telegram's compact double-check icon. */
 .bubble-status {
+  display: inline-flex;
+  align-items: baseline;
   font-size: 11px;
   margin-left: 3px;
   vertical-align: -1px;
 }
-.bubble-status.pi-clock { opacity: 0.7; }
-.bubble-status-failed { color: #fca5a5; }
+.bubble-status i { font-size: inherit; line-height: 1; }
+/* Pull the second ✓ left so the two checks form a tight ✓✓ glyph. */
+.bubble-status-read i + i { margin-left: -6px; }
+.bubble-status-sending { opacity: 0.7; }
+.bubble-status-failed  { color: #fca5a5; }
+/* Outgoing bubble background is dark/primary — both check states stay white,
+   but the read variant is fully opaque while the sent one is muted, just
+   like Telegram's faded grey single check vs bright double. */
+.bubble-out .bubble-status-sent  { opacity: 0.7; }
+.bubble-out .bubble-status-read  { opacity: 1; }
 
 /* Reply quote block above a bubble body */
 .reply-quote {

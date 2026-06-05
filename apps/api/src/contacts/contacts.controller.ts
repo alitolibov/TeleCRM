@@ -1,4 +1,4 @@
-import { Body, Controller, Get, NotFoundException, Param, Post, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
 import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { ContactsService } from './contacts.service'
@@ -19,11 +19,11 @@ export class ContactsController {
     return this.service.upsert(user.id, dto)
   }
 
-  /** Status check for the sidebar button — returns the contact row or 404. */
+  /** Status probe for the sidebar button. "Not a contact" is a normal state
+   *  for fresh chats, so we answer with `null` + 200 instead of 404 — keeps
+   *  the browser dev tools clean from spurious red rows on every chat open. */
   @Get('by-client/:clientId')
   async findByClient(@Param('clientId') clientId: string) {
-    const row = await this.service.findByClient(clientId)
-    if (!row) throw new NotFoundException('not a contact')
-    return row
+    return (await this.service.findByClient(clientId)) ?? null
   }
 }

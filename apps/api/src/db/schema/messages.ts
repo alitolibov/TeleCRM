@@ -14,6 +14,12 @@ export const messages = pgTable('messages', {
   content: jsonb('content').$type<TgMessageContent>().notNull(),
   isRead: boolean('is_read').notNull().default(false),
   isDeleted: boolean('is_deleted').notNull().default(false),
+  /** When the OTHER side read this outgoing message — set from TDLib's
+   *  `updateChatReadOutbox`. Null = not yet read. Used by MessageBubble to
+   *  flip ✓ → ✓✓ on every outgoing content type. We don't reuse `isRead`
+   *  for this because that field tracks incoming consumption (managed by
+   *  `updateChatReadInbox`) — overloading would muddle both flows. */
+  readAt: timestamp('read_at', { withTimezone: true }),
   editedAt: timestamp('edited_at', { withTimezone: true }),
   // For replies — TG message id of the message being replied to (within same chat).
   // Stored as bigint (not uuid) so we don't need a self-FK on TDLib history we may not have.

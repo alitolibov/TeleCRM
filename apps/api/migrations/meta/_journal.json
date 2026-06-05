@@ -92,6 +92,13 @@
       "when": 1780690000000,
       "tag": "0012_escalation_unclosed",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1780662591220,
+      "tag": "0013_noisy_rogue",
+      "breakpoints": true
     }
   ]
 }
