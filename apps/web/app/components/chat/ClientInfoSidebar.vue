@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { Chat } from '~/stores/chats'
-import type { ClientStatus } from '~/components/chat/dialogs/CloseChatDialog.vue'
 import AddContactDialog, { type AddContactPayload } from '~/components/chat/dialogs/AddContactDialog.vue'
 import { avatarColor, initials } from '~/utils/format'
 
@@ -97,13 +96,10 @@ async function onConfirm(payload: AddContactPayload) {
   }
 }
 
-const statusLabels: Record<ClientStatus, string> = {
-  thinking: 'Думает',
-  consulting: 'Пошёл посоветоваться',
-  waiting_price: 'Ждёт снижения цены',
-  booked: 'Забронировал',
-  bought: 'Купил',
-}
+// Admin-managed list (close_reasons table) — load once and reuse the in-memory
+// store across renders.
+const { labelOf: statusLabel, load: loadCloseReasons } = useCloseReasons()
+onMounted(() => loadCloseReasons())
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return ''
@@ -207,7 +203,7 @@ function formatDateTime(iso: string | null | undefined) {
       <div class="mt-3">
         <span class="status-pill" :class="`status-pill-${info.currentChatResult?.clientStatus ?? info.latestStatus}`">
           <i class="pi pi-clock text-[10px]" />
-          {{ statusLabels[(info.currentChatResult?.clientStatus ?? info.latestStatus) as ClientStatus] }}
+          {{ statusLabel(info.currentChatResult?.clientStatus ?? info.latestStatus) }}
         </span>
         <p v-if="info.currentChatResult?.comment" class="mt-3 text-[13px] text-surface-600 leading-relaxed">
           {{ info.currentChatResult.comment }}
@@ -246,7 +242,7 @@ function formatDateTime(iso: string | null | undefined) {
           <div class="flex-1 min-w-0">
             <template v-if="t.type === 'closed'">
               <div class="text-[13.5px] font-semibold">
-                {{ statusLabels[t.clientStatus as ClientStatus] }}{{ t.flight ? ` · ${t.flight}` : '' }}
+                {{ statusLabel(t.clientStatus) }}{{ t.flight ? ` · ${t.flight}` : '' }}
               </div>
               <div class="text-[11.5px] text-surface-400 mt-0.5">
                 Закрыт · {{ formatDateTime(t.date) }}<span v-if="t.amount"> · ${{ t.amount }}</span>

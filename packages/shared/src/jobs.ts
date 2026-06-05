@@ -85,3 +85,39 @@ export interface TgClientRefreshResponse {
   phone?: string
   isContact?: boolean
 }
+
+/** Pin or unpin a message in a private TG chat (shown to the client too). */
+export interface TgPinJob {
+  chatId: number          // TG chat id (== client's user id for private chats)
+  messageId: number       // TG message id
+  pin: boolean            // true = pin, false = unpin
+}
+
+/** Forward existing TG messages from one chat to another via TDLib
+ *  `forwardMessages`. Destination is a TG chat id, not a CRM uuid. */
+export interface TgForwardJob {
+  fromChatId: number
+  messageIds: number[]
+  toChatId: number
+}
+
+/** Look up TG chats the CRM-account has access to — drives the forward
+ *  picker. `q` is matched against TDLib's `searchChats` (local) and
+ *  `searchChatsOnServer` (global) results. */
+export interface TgChatSearchRequest {
+  q: string
+  limit?: number
+}
+
+export interface TgChatSearchResult {
+  /** TG chat id — positive for users, negative for groups/channels. */
+  id: number
+  title: string
+  /** Type hint so the UI can show different icons. */
+  type: 'user' | 'group' | 'channel' | 'other'
+  username?: string
+}
+
+export interface TgChatSearchResponse {
+  items: TgChatSearchResult[]
+}

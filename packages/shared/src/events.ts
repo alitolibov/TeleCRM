@@ -18,6 +18,13 @@ export interface TgMessageEvent {
   unreadCount?: number
   /** TG message id of the message this one replies to, if any. */
   replyToMessageId?: number
+  /** Present when the message arrived via TG forward — drives the
+   *  "Переслано от …" banner in the receiving chat's bubble. `name` is the
+   *  original sender's display name (already resolved by the worker). */
+  forwardedFrom?: {
+    name: string
+    date: number       // unix seconds
+  }
 }
 
 /** @deprecated use TgMessageEvent */
@@ -60,6 +67,14 @@ export interface TgMessageEditedEvent {
 export interface TgMessageDeletedEvent {
   chatId: number
   messageIds: number[]
+}
+
+/** Fired by TDLib when a message's pinned state changes — covers both pins
+ *  from our own CRM (echo) and pins done in the user's Telegram client. */
+export interface TgMessagePinnedEvent {
+  chatId: number              // telegram chat id
+  messageId: number           // telegram message id
+  isPinned: boolean
 }
 
 /**

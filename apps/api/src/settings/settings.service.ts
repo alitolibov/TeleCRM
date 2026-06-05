@@ -16,7 +16,11 @@ export class SettingsService {
     return created
   }
 
-  async update(patch: { escalationNewMinutes?: number; escalationReplyMinutes?: number }) {
+  async update(patch: {
+    escalationNewMinutes?: number
+    escalationReplyMinutes?: number
+    escalationUnclosedMinutes?: number
+  }) {
     const current = await this.get()
     const [updated] = await this.db
       .update(schema.appSettings)

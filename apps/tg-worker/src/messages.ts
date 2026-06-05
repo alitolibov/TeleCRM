@@ -6,6 +6,7 @@ import type {
   TgMessageEditedEvent,
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
+  TgMessagePinnedEvent,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
@@ -38,6 +39,11 @@ const deletedQueue = new Queue<TgMessageDeletedEvent>(REDIS_QUEUES.tgIncomingDel
 const idRemapQueue = new Queue<TgMessageIdRemapEvent>(REDIS_QUEUES.tgIdRemap, {
   connection: buildRedisConnection(),
   defaultJobOptions: { removeOnComplete: 500, removeOnFail: 100 },
+})
+
+const pinnedQueue = new Queue<TgMessagePinnedEvent>(REDIS_QUEUES.tgIncomingPinned, {
+  connection: buildRedisConnection(),
+  defaultJobOptions: { removeOnComplete: 200, removeOnFail: 50 },
 })
 
 const userCache = new Map<number, any>()
@@ -76,6 +82,43 @@ export async function getTgUser(client: any, userId: number): Promise<any | null
       return null
     }
   }
+}
+
+/**
+ * Resolve TDLib's messageForwardInfo into the small { name, date } shape the
+ * API/UI uses. Three origin types in practice:
+ *   · messageOriginUser — sender_user_id → getUser → "First Last";
+ *   · messageOriginHiddenUser — sender_name is the only thing we get (privacy);
+ *   · messageOriginChannel / messageOriginChat — chat_id → getChat → title.
+ */
+export async function parseForwardInfo(
+  client: any,
+  forwardInfo: any,
+): Promise<{ name: string; date: number } | undefined> {
+  if (!forwardInfo) return undefined
+  const origin = forwardInfo.origin
+  if (!origin) return undefined
+  let name = ''
+  switch (origin._) {
+    case 'messageOriginUser': {
+      const user = await getTgUser(client, origin.sender_user_id).catch(() => null)
+      name = [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim()
+        || `id ${origin.sender_user_id}`
+      break
+    }
+    case 'messageOriginHiddenUser':
+      name = origin.sender_name || 'Скрытый пользователь'
+      break
+    case 'messageOriginChannel':
+    case 'messageOriginChat': {
+      const chat = await client.invoke({ _: 'getChat', chat_id: origin.chat_id }).catch(() => null)
+      name = chat?.title || `chat ${origin.chat_id}`
+      break
+    }
+    default:
+      return undefined
+  }
+  return { name, date: forwardInfo.date }
 }
 
 export function parseContent(tdContent: any): TgMessageContent {
@@ -248,6 +291,21 @@ export function setupMessageHandler(client: any, myUserId: number) {
     // skip messages sent on behalf of a channel/chat (extremely rare in 1-on-1)
     if (msg.sender_id?._ === 'messageSenderChat') return
 
+    // TDLib emits a synthetic "pinned" service message when someone pins
+    // something in the chat. We don't want it cluttering the timeline as
+    // "Сообщение не поддерживается" — the pin is tracked via the chat's
+    // pinned_message_id instead. Same for other private-chat service notes
+    // we have no UI for (group calls, theme changes, etc.).
+    const serviceTypes = new Set([
+      'messagePinMessage',
+      'messageChatChangePhoto',
+      'messageChatChangeTitle',
+      'messageChatSetTheme',
+      'messageVideoChatStarted',
+      'messageVideoChatEnded',
+    ])
+    if (serviceTypes.has(msg.content?._)) return
+
     const isOutgoing = !!msg.is_outgoing
 
     // In private chats, chat_id == other party's user_id (the client)
@@ -265,6 +323,11 @@ export function setupMessageHandler(client: any, myUserId: number) {
       } catch {}
     }
 
+    // If TDLib marked the message as a forward, resolve the original sender
+    // so the receiving chat can render a "Переслано от …" banner. Hidden
+    // origins (sender_name set instead of user_id) we just trust verbatim.
+    const forwardedFrom = await parseForwardInfo(client, msg.forward_info).catch(() => undefined)
+
     const event: TgMessageEvent = {
       chatId: msg.chat_id,
       messageId: msg.id,
@@ -274,6 +337,7 @@ export function setupMessageHandler(client: any, myUserId: number) {
       date: msg.date,
       unreadCount,
       replyToMessageId: msg.reply_to?.message_id || undefined,
+      forwardedFrom,
     }
 
     // jobId = chatId-messageId ensures deduplication if TDLib replays backlog
@@ -361,5 +425,24 @@ export function setupMessageHandler(client: any, myUserId: number) {
       console.error('[tg-worker] id-remap enqueue failed:', e),
     )
     console.log(`[tg-worker] ↻ remap ${event.oldMessageId} → ${event.newMessageId} in chat ${event.chatId}`)
+  })
+
+  // Pin/unpin: TDLib fires updateMessageIsPinned both for our own CRM pins
+  // (echo) and for pins/unpins the user does directly in the Telegram client.
+  // The API processor updates chats.pinned_message_ids and broadcasts.
+  client.on('update', async (update: any) => {
+    if (update._ !== 'updateMessageIsPinned') return
+    if (update.chat_id <= 0 || update.chat_id === myUserId) return
+    if (SERVICE_USER_IDS.has(update.chat_id)) return
+
+    const event: TgMessagePinnedEvent = {
+      chatId: update.chat_id,
+      messageId: update.message_id,
+      isPinned: !!update.is_pinned,
+    }
+    await pinnedQueue.add('pinned', event).catch((e) =>
+      console.error('[tg-worker] pinned enqueue failed:', e),
+    )
+    console.log(`[tg-worker] ${event.isPinned ? '📌' : '↺'} pin event msg ${event.messageId} in chat ${event.chatId}`)
   })
 }

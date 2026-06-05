@@ -6,6 +6,7 @@ import type {
   TgMessageEditedEvent,
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
+  TgMessagePinnedEvent,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { ChatsService } from './chats.service'
@@ -62,5 +63,16 @@ export class ChatsIdRemapProcessor extends WorkerHost {
 
   async process(job: Job<TgMessageIdRemapEvent>): Promise<void> {
     await this.chatsService.remapMessageId(job.data)
+  }
+}
+
+@Processor(REDIS_QUEUES.tgIncomingPinned)
+export class ChatsPinnedProcessor extends WorkerHost {
+  constructor(private readonly chatsService: ChatsService) {
+    super()
+  }
+
+  async process(job: Job<TgMessagePinnedEvent>): Promise<void> {
+    await this.chatsService.applyExternalPin(job.data)
   }
 }

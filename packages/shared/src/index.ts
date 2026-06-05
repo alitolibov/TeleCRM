@@ -18,6 +18,10 @@ export const REDIS_QUEUES = {
   tgIdRemap: 'tg-id-remap',
   tgAddContact: 'tg-add-contact',
   tgClientRefresh: 'tg-client-refresh',
+  tgPin: 'tg-pin',
+  tgForward: 'tg-forward',
+  tgChatSearch: 'tg-chat-search',
+  tgIncomingPinned: 'tg-incoming-pinned',
 } as const
 
 export type {
@@ -29,6 +33,7 @@ export type {
   TgMessageEditedEvent,
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
+  TgMessagePinnedEvent,
 } from './events.js'
 export type {
   TgOutgoingJob,
@@ -42,4 +47,9 @@ export type {
   TgAddContactJob,
   TgClientRefreshRequest,
   TgClientRefreshResponse,
+  TgPinJob,
+  TgForwardJob,
+  TgChatSearchRequest,
+  TgChatSearchResponse,
+  TgChatSearchResult,
 } from './jobs.js'

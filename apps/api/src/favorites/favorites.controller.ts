@@ -27,6 +27,15 @@ export class FavoritesController {
     return this.service.create(user.id, dto)
   }
 
+  /** Forward a chat message into this user's favourites. The body's
+   *  `messageId` is a CRM message uuid. */
+  @UseGuards(JwtAuthGuard)
+  @Post('forward')
+  forward(@CurrentUser() user: { id: string }, @Body('messageId') messageId: string) {
+    if (!messageId) throw new BadRequestException('messageId is required')
+    return this.service.forwardMessage(user.id, messageId)
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('upload')
   @UseInterceptors(

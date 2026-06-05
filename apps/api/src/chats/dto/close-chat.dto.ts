@@ -1,10 +1,9 @@
-import { IsEnum, IsOptional, IsNumber, IsString, MaxLength } from 'class-validator'
-
-export type ClientStatusValue = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+import { IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength } from 'class-validator'
 
 export class CloseChatDto {
-  @IsEnum(['thinking', 'consulting', 'waiting_price', 'booked', 'bought'])
-  status!: ClientStatusValue
+  /** Machine key — must match an existing row in close_reasons.value. */
+  @IsString() @IsNotEmpty() @MaxLength(50)
+  status!: string
 
   @IsOptional() @IsString() @MaxLength(100)
   flightFrom?: string

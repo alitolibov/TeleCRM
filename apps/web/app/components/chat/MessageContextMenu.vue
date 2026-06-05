@@ -5,12 +5,18 @@ defineProps<{
   msg: ChatMessage
   pos: { x: number; y: number }
   canReply: boolean
+  canCopy: boolean
+  canForward: boolean
+  canPin: boolean
   canEdit: boolean
   canDelete: boolean
 }>()
 
 defineEmits<{
   (e: 'reply', msg: ChatMessage): void
+  (e: 'copy', msg: ChatMessage): void
+  (e: 'forward', msg: ChatMessage): void
+  (e: 'pin', msg: ChatMessage): void
   (e: 'edit', msg: ChatMessage): void
   (e: 'delete', msg: ChatMessage): void
 }>()
@@ -26,6 +32,16 @@ defineEmits<{
       <button v-if="canReply" class="msg-action-item" @click="$emit('reply', msg)">
         <i class="pi pi-reply" /> Ответить
       </button>
+      <button v-if="canCopy" class="msg-action-item" @click="$emit('copy', msg)">
+        <i class="pi pi-clone" /> Копировать
+      </button>
+      <button v-if="canForward" class="msg-action-item" @click="$emit('forward', msg)">
+        <i class="pi pi-send" /> Переслать
+      </button>
+      <button v-if="canPin" class="msg-action-item" @click="$emit('pin', msg)">
+        <i class="pi pi-bookmark" /> Закрепить
+      </button>
+      <div v-if="(canReply || canCopy || canForward || canPin) && (canEdit || canDelete)" class="msg-context-divider" />
       <button v-if="canEdit" class="msg-action-item" @click="$emit('edit', msg)">
         <i class="pi pi-pencil" /> Изменить
       </button>
@@ -70,4 +86,9 @@ defineEmits<{
 .msg-context-menu .msg-action-item:hover { background: var(--p-surface-100); }
 .msg-context-menu .msg-action-danger { color: #ef4444; }
 .msg-context-menu .msg-action-danger:hover { background: rgba(239, 68, 68, 0.08); }
+.msg-context-divider {
+  height: 1px;
+  background: var(--p-surface-200);
+  margin: 4px 6px;
+}
 </style>

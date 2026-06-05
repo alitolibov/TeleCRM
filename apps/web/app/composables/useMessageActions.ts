@@ -40,6 +40,22 @@ export function useMessageActions(opts: {
   function canReply(_msg: ChatMessage): boolean {
     return true
   }
+  /** Copy is offered for anything that has some textual payload. */
+  function canCopy(msg: ChatMessage): boolean {
+    const c = msg.content
+    if (!c) return false
+    if (c.type === 'text') return !!c.text
+    return typeof c.caption === 'string' && c.caption.length > 0
+  }
+  /** Forward needs a real (server-confirmed) TG message — optimistic sends
+   *  have no Telegram id yet, and system notes can't be forwarded. */
+  function canForward(msg: ChatMessage): boolean {
+    return msg.senderType !== 'system' && !!msg.telegramMessageId
+  }
+  /** Pin lives in Telegram itself, so same constraints as forward. */
+  function canPin(msg: ChatMessage): boolean {
+    return msg.senderType !== 'system' && !!msg.telegramMessageId
+  }
 
   function startEditing(msg: ChatMessage) {
     editingMessageId.value = msg.id
@@ -88,9 +104,19 @@ export function useMessageActions(opts: {
   function onContextMenu(e: MouseEvent, msg: ChatMessage) {
     e.preventDefault()
     actionMenuMsg.value = msg
-    // Clamp menu inside viewport. Up to 3 items now (reply + edit + delete).
-    const menuWidth = 180
-    const menuHeight = 130
+    // Clamp menu inside viewport. Up to 6 items now (reply, copy, forward,
+    // pin, edit, delete) + 1px divider — measure based on the actual rendered
+    // count rather than a magic constant so disabled items don't waste space.
+    const ITEM = 40                              // ≈ row height + padding
+    const visibleItems =
+      Number(canReply(msg)) +
+      Number(canCopy(msg)) +
+      Number(canForward(msg)) +
+      Number(canPin(msg)) +
+      Number(canEdit(msg)) +
+      Number(canDelete(msg))
+    const menuWidth = 200
+    const menuHeight = visibleItems * ITEM + 16   // small padding + maybe a divider
     actionMenuPos.value = {
       x: Math.min(e.clientX, window.innerWidth - menuWidth - 8),
       y: Math.min(e.clientY, window.innerHeight - menuHeight - 8),
@@ -123,6 +149,9 @@ export function useMessageActions(opts: {
     canEdit,
     canDelete,
     canReply,
+    canCopy,
+    canForward,
+    canPin,
     startEditing,
     cancelEditing,
     submitEdit,

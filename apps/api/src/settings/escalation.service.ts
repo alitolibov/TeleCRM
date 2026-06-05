@@ -9,7 +9,7 @@ import { ChatsGateway } from '../chats/chats.gateway'
 
 const SWEEP_INTERVAL_MS = 60 * 1000
 
-type Kind = 'unpicked' | 'unanswered'
+type Kind = 'unpicked' | 'unanswered' | 'unclosed'
 
 /**
  * Escalation sweeper (spec 7.3 / 10.2). Every minute it looks for:
@@ -46,6 +46,7 @@ export class EscalationService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now()
     await this.sweepUnpicked(cfg.escalationNewMinutes, now)
     await this.sweepUnanswered(cfg.escalationReplyMinutes, now)
+    await this.sweepUnclosed(cfg.escalationUnclosedMinutes, now)
   }
 
   /** 'new' chats sitting in the queue past the threshold. */
@@ -97,6 +98,33 @@ export class EscalationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** 'active' chats that have been open longer than the threshold without being
+   *  closed. Reference time is when the manager first responded (so the timer
+   *  measures actual handling duration), falling back to created_at. */
+  private async sweepUnclosed(minutes: number, now: number) {
+    const cutoff = new Date(now - minutes * 60_000)
+    const rows = await this.db.execute<{
+      id: string; assigned_to: string | null; ref: Date; first_name: string; last_name: string | null
+    }>(sql`
+      SELECT c.id, c.assigned_to,
+             COALESCE(c.first_response_at, c.created_at) AS ref,
+             cl.first_name, cl.last_name
+      FROM ${schema.chats} c
+      JOIN ${schema.clients} cl ON cl.id = c.client_id
+      WHERE c.status = 'active'
+        AND COALESCE(c.first_response_at, c.created_at) < ${cutoff}
+    `)
+    for (const r of rows.rows) {
+      const ref = new Date(r.ref)
+      const ageMin = (now - ref.getTime()) / 60_000
+      const level = ageMin >= minutes * 2 ? 2 : 1
+      await this.escalate({
+        chatId: r.id, assignedTo: r.assigned_to, kind: 'unclosed', level, ref,
+        clientName: this.name(r.first_name, r.last_name), minutes,
+      })
+    }
+  }
+
   private name(first: string, last: string | null) {
     return [first, last].filter(Boolean).join(' ') || 'Клиент'
   }
@@ -120,13 +148,17 @@ export class EscalationService implements OnModuleInit, OnModuleDestroy {
     if (existing.length > 0) return
 
     // Level 1 → first reminder to the manager; level 2 → escalated to admins.
-    const body = p.level >= 2
-      ? (p.kind === 'unpicked'
-          ? `Всё ещё не взят в работу (>${p.minutes * 2} мин) — эскалация руководителю`
-          : `Клиент всё ещё без ответа (>${p.minutes * 2} мин) — эскалация руководителю`)
-      : (p.kind === 'unpicked'
-          ? `Не взят в работу более ${p.minutes} мин`
-          : `Клиент ждёт ответа более ${p.minutes} мин`)
+    const longText: Record<Kind, string> = {
+      unpicked:   `Всё ещё не взят в работу (>${p.minutes * 2} мин) — эскалация руководителю`,
+      unanswered: `Клиент всё ещё без ответа (>${p.minutes * 2} мин) — эскалация руководителю`,
+      unclosed:   `Чат всё ещё не закрыт (>${p.minutes * 2} мин) — эскалация руководителю`,
+    }
+    const shortText: Record<Kind, string> = {
+      unpicked:   `Не взят в работу более ${p.minutes} мин`,
+      unanswered: `Клиент ждёт ответа более ${p.minutes} мин`,
+      unclosed:   `Чат в работе более ${p.minutes} мин и не закрыт`,
+    }
+    const body = p.level >= 2 ? longText[p.kind] : shortText[p.kind]
 
     // Resolve recipients: level 1 → the responsible manager (if any), otherwise
     // (and always at level 2) → admins. Used for both push and the in-app toast.

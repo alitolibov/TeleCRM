@@ -60,6 +60,44 @@ export class FavoritesService {
   }
 
   /**
+   * Snapshot an existing chat message into this user's favourites. The source
+   * message's content (TG fileId, caption, …) is copied verbatim so it
+   * renders with the existing MessageBubble templates; an extra `source`
+   * blob carries the "Forwarded from <client>" header.
+   */
+  async forwardMessage(userId: string, sourceMessageId: string) {
+    const msg = await this.db.query.messages.findFirst({
+      where: (m, { eq }) => eq(m.id, sourceMessageId),
+      with: {
+        chat: {
+          with: {
+            client: { columns: { firstName: true, lastName: true, telegramId: true } },
+          },
+        },
+      },
+    })
+    if (!msg) throw new Error('source message not found')
+
+    const clientName = [msg.chat.client.firstName, msg.chat.client.lastName]
+      .filter(Boolean).join(' ').trim() || `id ${msg.chat.client.telegramId}`
+
+    const source = {
+      messageId: msg.id,
+      chatId: msg.chatId,
+      clientId: msg.chat.clientId,
+      clientName,
+      senderType: msg.senderType,           // 'client' | 'manager' — used by UI to colour the header
+      sentAt: msg.createdAt.toISOString(),
+    }
+
+    const [row] = await this.db
+      .insert(schema.favorites)
+      .values({ userId, content: msg.content, source })
+      .returning()
+    return row
+  }
+
+  /**
    * Save uploaded files to disk and insert one favorite row per file. The
    * caller's caption is attached to the first row only (matches the chat
    * upload's "caption on the first photo" UX).

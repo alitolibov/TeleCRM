@@ -10,6 +10,8 @@ export const appSettings = pgTable('app_settings', {
   escalationNewMinutes: integer('escalation_new_minutes').notNull().default(15),
   /** Minutes a manager may leave a client message unanswered before escalating. */
   escalationReplyMinutes: integer('escalation_reply_minutes').notNull().default(30),
+  /** Minutes an 'active' chat may stay open (unclosed) before escalating. */
+  escalationUnclosedMinutes: integer('escalation_unclosed_minutes').notNull().default(120),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 

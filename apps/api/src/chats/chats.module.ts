@@ -10,9 +10,11 @@ import {
   ChatsEditedProcessor,
   ChatsDeletedProcessor,
   ChatsIdRemapProcessor,
+  ChatsPinnedProcessor,
 } from './chats.processor'
 import { ChatsGateway } from './chats.gateway'
 import { NotificationsModule } from '../notifications/notifications.module'
+import { CloseReasonsModule } from '../close-reasons/close-reasons.module'
 import { REDIS_QUEUES } from '@telecrm/shared'
 
 @Module({
@@ -28,6 +30,10 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       { name: REDIS_QUEUES.tgIncomingDeleted },
       { name: REDIS_QUEUES.tgIdRemap },
       { name: REDIS_QUEUES.tgClientRefresh },
+      { name: REDIS_QUEUES.tgPin },
+      { name: REDIS_QUEUES.tgForward },
+      { name: REDIS_QUEUES.tgChatSearch },
+      { name: REDIS_QUEUES.tgIncomingPinned },
     ),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -37,6 +43,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
       inject: [ConfigService],
     }),
     NotificationsModule,
+    CloseReasonsModule,
   ],
   controllers: [ChatsController],
   providers: [
@@ -46,6 +53,7 @@ import { REDIS_QUEUES } from '@telecrm/shared'
     ChatsEditedProcessor,
     ChatsDeletedProcessor,
     ChatsIdRemapProcessor,
+    ChatsPinnedProcessor,
     ChatsGateway,
   ],
   exports: [ChatsService, ChatsGateway],

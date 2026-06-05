@@ -24,13 +24,7 @@ const usersStore = useUsersStore()
 
 const isAdmin = computed(() => user.value?.role === 'admin')
 
-const statusLabels: Record<string, string> = {
-  thinking: 'Думает',
-  consulting: 'Пошёл посоветоваться',
-  waiting_price: 'Ждёт снижения цены',
-  booked: 'Забронировал',
-  bought: 'Купил',
-}
+const { items: closeReasons, load: loadCloseReasons, labelOf: statusLabel } = useCloseReasons()
 
 const q = ref('')
 const status = ref('')
@@ -43,7 +37,7 @@ const hasFilter = computed(() => !!(q.value.trim() || status.value || manager.va
 
 const statusOptions = computed(() => [
   { label: 'Все статусы', value: '' },
-  ...Object.entries(statusLabels).map(([value, label]) => ({ value, label })),
+  ...closeReasons.value.map(r => ({ value: r.value, label: r.label })),
 ])
 const managerOptions = computed(() => [
   { label: 'Все менеджеры', value: '' },
@@ -90,7 +84,10 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
-onMounted(() => load())   // user directory is loaded app-wide by the layout
+onMounted(() => {
+  loadCloseReasons()
+  load()
+})   // user directory is loaded app-wide by the layout
 </script>
 
 <template>
@@ -135,7 +132,7 @@ onMounted(() => load())   // user directory is loaded app-wide by the layout
               <span class="font-semibold text-[14.5px] text-surface-900 truncate">
                 {{ r.client.firstName }} {{ r.client.lastName ?? '' }}
               </span>
-              <span class="status-pill" :class="`status-pill-${r.clientStatus}`">{{ statusLabels[r.clientStatus] }}</span>
+              <span class="status-pill" :class="`status-pill-${r.clientStatus}`">{{ statusLabel(r.clientStatus) }}</span>
               <span v-if="r.status !== 'closed'" class="res-reopened">переоткрыт</span>
             </div>
             <div class="res-meta">

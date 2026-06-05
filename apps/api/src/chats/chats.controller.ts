@@ -128,6 +128,36 @@ export class ChatsController {
     return this.chatsService.deleteMessage(id, messageId, user.id, user.role)
   }
 
+  @Post(':id/messages/:messageId/pin')
+  pinMessage(@Param('id') id: string, @Param('messageId') messageId: string) {
+    return this.chatsService.pinMessage(id, messageId, true)
+  }
+
+  @Delete(':id/messages/:messageId/pin')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  unpinMessage(@Param('id') id: string, @Param('messageId') messageId: string) {
+    return this.chatsService.pinMessage(id, messageId, false)
+  }
+
+  @Post(':id/messages/:messageId/forward')
+  forwardMessage(
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+    @Body('toChatId') toChatId: number,
+  ) {
+    if (typeof toChatId !== 'number') {
+      throw new BadRequestException('toChatId must be a number')
+    }
+    return this.chatsService.forwardMessageToTg(id, messageId, toChatId)
+  }
+
+  /** Picker for "Переслать в TG-чат" — type-ahead, server-backed. */
+  @Get('tg-chats/search')
+  searchTgChats(@Query('q') q: string | undefined, @Query('limit') limit: string | undefined) {
+    const lim = limit ? Math.min(Number(limit) || 20, 50) : 20
+    return this.chatsService.searchTgChats(q ?? '', lim)
+  }
+
   @Post(':id/sync-history')
   syncHistory(
     @Param('id') id: string,

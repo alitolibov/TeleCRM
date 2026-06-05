@@ -4,10 +4,8 @@ import BaseTextarea from '~/components/BaseTextarea.vue'
 import BaseDatePicker from '~/components/BaseDatePicker.vue'
 import BaseButton from '~/components/BaseButton.vue'
 
-export type ClientStatus = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
-
 export interface ClosePayload {
-  status: ClientStatus
+  status: string
   flightFrom?: string
   flightTo?: string
   dates?: string
@@ -25,14 +23,16 @@ const emit = defineEmits<{
   (e: 'confirm', payload: ClosePayload): void
 }>()
 
-const status = ref<ClientStatus | ''>('')
+const { items: clientStatuses, load: loadCloseReasons } = useCloseReasons()
+
+const status = ref('')
 const flightFrom = ref('')
 const flightTo = ref('')
 const dateRange = ref<Date[] | null>(null)
 const amount = ref('')
 const comment = ref('')
 
-// Reset every time the modal is opened
+// Reset every time the modal is opened, and make sure the list is loaded.
 watch(() => props.open, (isOpen) => {
   if (isOpen) {
     status.value = ''
@@ -41,16 +41,9 @@ watch(() => props.open, (isOpen) => {
     dateRange.value = null
     amount.value = ''
     comment.value = ''
+    loadCloseReasons()
   }
 })
-
-const clientStatuses: { value: ClientStatus; label: string }[] = [
-  { value: 'thinking',     label: 'Думает' },
-  { value: 'consulting',   label: 'Пошёл посоветоваться' },
-  { value: 'waiting_price', label: 'Ждёт снижения цены' },
-  { value: 'booked',       label: 'Забронировал' },
-  { value: 'bought',       label: 'Купил' },
-]
 
 function onlyDecimal(raw: string): string {
   return raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')
@@ -69,7 +62,7 @@ function formatDateRange(range: Date[] | null): string {
 function submit() {
   if (!status.value) return
   emit('confirm', {
-    status: status.value as ClientStatus,
+    status: status.value,
     flightFrom: flightFrom.value || undefined,
     flightTo: flightTo.value || undefined,
     dates: formatDateRange(dateRange.value) || undefined,
@@ -108,9 +101,12 @@ function submit() {
           <div class="field-label">
             Статус клиента <span class="text-red-500">*</span>
           </div>
-          <div class="status-grid">
+          <div v-if="clientStatuses.length === 0" class="text-[13px] text-surface-400 py-3">
+            Статусы пока не настроены. Попросите администратора добавить их в настройках.
+          </div>
+          <div v-else class="status-grid">
             <label
-              v-for="s in clientStatuses" :key="s.value"
+              v-for="s in clientStatuses" :key="s.id"
               class="status-radio"
               :class="{ 'status-radio-active': status === s.value }"
             >

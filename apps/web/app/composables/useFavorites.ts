@@ -27,7 +27,7 @@ export function useFavorites() {
 
   /** Map a server-side favorite row into the ChatMessage shape MessageBubble expects. */
   function toMessage(row: FavoriteRow): ChatMessage {
-    return {
+    const msg: ChatMessage = {
       id: row.id,
       chatId: FAVORITES_CHAT_ID,
       telegramMessageId: 0,
@@ -38,6 +38,13 @@ export function useFavorites() {
       isRead: true,
       createdAt: row.createdAt,
     }
+    if (row.source) {
+      msg.forwardedFrom = {
+        name: row.source.clientName,
+        sentAt: row.source.sentAt,
+      }
+    }
+    return msg
   }
 
   async function load() {

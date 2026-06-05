@@ -19,13 +19,24 @@ defineEmits<{
 }>()
 
 const config = useRuntimeConfig()
-/** Favorites media is served from a separate endpoint keyed by the favorite
- *  row id (== msg.id) — the fileId/remoteFileId args don't apply there. */
+/** Two-source media in Favorites:
+ *   · forwarded TG content carries a real `fileId` → served via /files (same
+ *     endpoint normal chat photos use);
+ *   · locally-uploaded favourites have no fileId → served via /favorites/files
+ *     keyed by the favourite row id (= msg.id). */
 const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string): string => {
-  if (props.msg.chatId === FAVORITES_CHAT_ID) {
-    return `${config.public.apiUrl}/favorites/files/${props.msg.id}`
+  if (fileId) {
+    return buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
   }
-  return buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
+  return `${config.public.apiUrl}/favorites/files/${props.msg.id}`
+}
+
+function formatForwardTime(iso: string): string {
+  const d = new Date(iso)
+  const now = new Date()
+  const time = d.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+  if (d.toDateString() === now.toDateString()) return time
+  return d.toLocaleDateString('ru', { day: 'numeric', month: 'short' }) + ', ' + time
 }
 
 /** Telegram-style video: no native controls, custom play button overlay.
@@ -128,6 +139,17 @@ function replyPreview(target: ChatMessage): string {
         {{ replyTarget.senderType === 'manager' ? 'Вы' : 'Клиент' }}
       </div>
       <div class="reply-quote-text">{{ replyPreview(replyTarget) }}</div>
+    </div>
+
+    <!-- Forwarded-from header — name + original time, styled like Telegram's
+         forward banner. Shown both for TG-forwarded messages in regular chats
+         and for messages forwarded into Favorites. -->
+    <div v-if="msg.forwardedFrom" class="forwarded-banner">
+      <i class="pi pi-share-alt" />
+      <div class="flex flex-col min-w-0">
+        <span class="forwarded-name">{{ msg.forwardedFrom.name }}</span>
+        <span class="forwarded-time">{{ formatForwardTime(msg.forwardedFrom.sentAt) }}</span>
+      </div>
     </div>
 
     <template v-if="msg.content?.type === 'text'">
@@ -286,6 +308,25 @@ function replyPreview(target: ChatMessage): string {
   text-overflow: ellipsis;
   max-width: 240px;
 }
+
+/* Forwarded-from banner — sits above the bubble body, accented strip on the
+   left like Telegram's forward header. */
+.forwarded-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 6px 10px;
+  margin-bottom: 6px;
+  border-left: 2px solid var(--p-primary-color);
+  color: var(--p-primary-color);
+}
+.bubble-out .forwarded-banner {
+  border-left-color: rgba(255, 255, 255, 0.65);
+  color: rgba(255, 255, 255, 0.92);
+}
+.forwarded-banner i { font-size: 11px; opacity: 0.8; }
+.forwarded-name { font-size: 12px; font-weight: 600; line-height: 1.2; }
+.forwarded-time { font-size: 10.5px; opacity: 0.7; line-height: 1.2; }
 
 /* Telegram-style video player */
 .video-msg {

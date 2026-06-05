@@ -61,12 +61,25 @@
         @transfer="transferOpen = true"
       />
 
+      <!-- Pinned-message banner — Telegram 1:1: latest pin shown by default
+           (sorted by message date), natural scroll auto-tracks the pin
+           closest above the viewport bottom, click jumps to current and
+           steps to the next older one, × unpins the currently-shown one. -->
+      <PinnedBanner
+        v-if="!isFavorites && sortedPinnedMessages.length > 0"
+        :pins="sortedPinnedMessages"
+        :cursor="pinnedCursor"
+        @update:cursor="onPinnedCursorUpdate"
+        @jump-to="jumpToMessage"
+        @unpin="onUnpinMessage"
+      />
+
       <!-- Messages -->
       <div class="messages-wrap">
         <div
           class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-0.5"
           ref="messagesEl"
-          @scroll="onScroll"
+          @scroll="onMessagesScroll"
         >
           <div class="flex items-center justify-center py-2">
             <div v-if="loadingOlder" class="text-xs text-surface-400 flex items-center gap-2">
@@ -186,9 +199,15 @@
       :msg="actionMenuMsg"
       :pos="actionMenuPos"
       :can-reply="canReply(actionMenuMsg)"
+      :can-copy="canCopy(actionMenuMsg)"
+      :can-forward="canForward(actionMenuMsg)"
+      :can-pin="canPin(actionMenuMsg) && !isFavorites"
       :can-edit="canEdit(actionMenuMsg)"
       :can-delete="canDelete(actionMenuMsg)"
       @reply="startReplying"
+      @copy="onCopyMessage"
+      @forward="onForwardMessage"
+      @pin="onPinMessage"
       @edit="startEditingMessage"
       @delete="askDelete"
     />
@@ -219,6 +238,15 @@
       @update:open="(v: boolean) => !v && cancelTakeover()"
       @confirm="confirmTakeover"
     />
+
+    <ForwardDialog
+      :open="forwardDialog.open"
+      :msg="forwardDialog.msg"
+      :crm-chats="chats"
+      :show-favorites="!isFavorites"
+      @update:open="(v) => (forwardDialog.open = v) || (forwardDialog.msg = null)"
+      @pick="onForwardPick"
+    />
   </div>
 </template>
 
@@ -229,14 +257,16 @@ import Composer from '~/components/chat/Composer.vue'
 import ClientInfoSidebar from '~/components/chat/ClientInfoSidebar.vue'
 import MessageBubble from '~/components/chat/MessageBubble.vue'
 import MessageContextMenu from '~/components/chat/MessageContextMenu.vue'
+import PinnedBanner from '~/components/chat/PinnedBanner.vue'
 import TakeChatDialog from '~/components/chat/dialogs/TakeChatDialog.vue'
 import DeleteMessageDialog from '~/components/chat/dialogs/DeleteMessageDialog.vue'
 import CloseChatDialog, { type ClosePayload } from '~/components/chat/dialogs/CloseChatDialog.vue'
 import TransferChatDialog, { type TransferPayload } from '~/components/chat/dialogs/TransferChatDialog.vue'
 import AdminTakeoverDialog from '~/components/chat/dialogs/AdminTakeoverDialog.vue'
+import ForwardDialog from '~/components/chat/dialogs/ForwardDialog.vue'
 import BaseConfirmDialog from '~/components/BaseConfirmDialog.vue'
 import { FAVORITES_CHAT_ID, useFavorites } from '~/composables/useFavorites'
-import type { Chat } from '~/stores/chats'
+import type { Chat, ChatMessage } from '~/stores/chats'
 import { formatDay } from '~/utils/format'
 
 definePageMeta({ middleware: 'auth' })
@@ -254,6 +284,7 @@ const closeChatSaving = ref(false)
 const composerText = ref('')
 const uploading = ref(false)
 const toast = useToast()
+const { api } = useApi()
 
 // Files queued in the composer before sending (Telegram-style preview tray).
 const attachments = useAttachments()
@@ -287,7 +318,7 @@ watchEffect(() => {
 // === Edit / Delete / Reply state via composable ===
 const {
   editingMessage, replyingTo, deleteDialog, actionMenuPos, actionMenuMsg,
-  canEdit, canDelete, canReply,
+  canEdit, canDelete, canReply, canCopy, canForward, canPin,
   startEditing, cancelEditing,
   startReplying, cancelReplying,
   askDelete: askDeleteRaw, confirmDelete, onContextMenu,
@@ -306,6 +337,201 @@ function askDelete(msg: typeof actionMenuMsg.value) {
   if (!msg) return
   closeActionMenu()  // Close the right-click menu first — modal must not stack on top of it
   withGuard(activeChat.value, 'удалить сообщение', () => askDeleteRaw(msg))
+}
+
+/** Extract the text portion of a message — plain text for text messages,
+ *  caption for media. Returns empty string if there's nothing to copy. */
+function copyableText(msg: typeof actionMenuMsg.value): string {
+  if (!msg) return ''
+  const c = msg.content
+  if (!c) return ''
+  if (c.type === 'text') return c.text ?? ''
+  return c.caption ?? ''
+}
+
+async function onCopyMessage(msg: typeof actionMenuMsg.value) {
+  closeActionMenu()
+  const text = copyableText(msg)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.add({ severity: 'success', summary: 'Скопировано', life: 1500 })
+  } catch (e) {
+    console.error('[copy] clipboard failed', e)
+    toast.add({ severity: 'error', summary: 'Не удалось скопировать', life: 3000 })
+  }
+}
+
+/** Forward state — opened from the context menu with a target message. The
+ *  ForwardDialog renders three destination tabs (favorites / CRM / TG) and
+ *  emits the choice; index.vue translates that into the right API call. */
+const forwardDialog = ref<{ open: boolean; msg: ChatMessage | null }>({ open: false, msg: null })
+function onForwardMessage(msg: typeof actionMenuMsg.value) {
+  closeActionMenu()
+  if (!msg) return
+  forwardDialog.value = { open: true, msg }
+}
+
+function onPinMessage(msg: typeof actionMenuMsg.value) {
+  closeActionMenu()
+  if (!msg || !activeChat.value) return
+  // New chat → ask to take it first (same as the send/edit flow); admin
+  // touching someone else's chat → takeover confirm. Pin only fires once the
+  // chat actually belongs to the actor.
+  if (activeChat.value.status === 'new') {
+    askTakeChat(async () => {
+      try { await assignChat(activeChat.value!.id) } catch { return }
+      await refreshClientInfo(activeChat.value!.id)
+      await doPin(msg)
+    })
+    return
+  }
+  withGuard(activeChat.value, 'закрепить сообщение', () => doPin(msg))
+}
+
+async function doPin(msg: NonNullable<typeof actionMenuMsg.value>) {
+  if (!activeChat.value) return
+  try {
+    await api(`/chats/${activeChat.value.id}/messages/${msg.id}/pin`, { method: 'POST' })
+    // Optimistic local update — append to the pin stack, latest at the end.
+    const ids = [...(activeChat.value.pinnedMessageIds ?? [])]
+    if (!ids.includes(msg.id)) ids.push(msg.id)
+    activeChat.value.pinnedMessageIds = ids
+    const pins = [...(activeChat.value.pinnedMessages ?? [])]
+    if (!pins.some(p => p.id === msg.id)) pins.push(msg)
+    activeChat.value.pinnedMessages = pins
+    toast.add({ severity: 'success', summary: 'Закреплено в Telegram', life: 2500 })
+  } catch (e) {
+    console.error('[pin] failed', e)
+    toast.add({ severity: 'error', summary: 'Не удалось закрепить', life: 4000 })
+  }
+}
+
+// === Pinned banner cursor ===
+// Telegram 1:1: cursor = the index (in newest-first order) of the latest
+// pin the user has reached as they scroll up. Position-based, stateless —
+// the cursor is always derived from the current scrollTop, so it's
+// self-correcting and never drifts. Click sets the cursor explicitly and
+// briefly suspends the position sync so the smooth-scroll doesn't snap it
+// back before the user even sees the change.
+const pinnedCursor = ref(0)
+
+/** Defensive sort: even if the API ever returns pins in a different order,
+ *  the banner stays correct. The API already sorts in `hydratePinnedMessages`
+ *  but we don't want the UX to depend on that contract. */
+const sortedPinnedMessages = computed(() => {
+  const pins = activeChat.value?.pinnedMessages ?? []
+  return [...pins].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
+})
+
+// Click sets cursor → smooth-scroll-to-pin happens → without this guard, the
+// scroll handler would immediately overwrite cursor with whatever pin the
+// viewport landed on. The window is just long enough for the smooth scroll
+// to settle (PrimeVue / native both finish well under a second).
+const SCROLL_SYNC_SUSPEND_MS = 1500
+let scrollSyncSuspendedUntil = 0
+
+watch(
+  () => [activeChat.value?.id, sortedPinnedMessages.value.length] as const,
+  () => {
+    pinnedCursor.value = 0
+    scrollSyncSuspendedUntil = 0
+  },
+  { immediate: true },
+)
+
+/** Used as `@update:cursor` from PinnedBanner — explicit cursor changes
+ *  (click, future arrow keys, etc.) flow through here and pause the
+ *  scroll-driven sync. */
+function onPinnedCursorUpdate(c: number) {
+  pinnedCursor.value = c
+  scrollSyncSuspendedUntil = performance.now() + SCROLL_SYNC_SUSPEND_MS
+}
+
+/** Wraps the existing useChatScroll handler so the same scroll event also
+ *  advances the pin banner cursor. */
+function onMessagesScroll() {
+  onScroll()
+  syncPinCursorOnScroll()
+}
+
+/** Position-based cursor: walk pins newest-first and pick the latest one
+ *  whose bubble starts at or above the viewport's bottom edge. That's the
+ *  most recent pin the user has reached going up — exactly what Telegram
+ *  surfaces in the banner. If every pin is still below the viewport (user
+ *  is at the very top of the loaded history), fall back to the oldest pin
+ *  as the next target if they scroll down. */
+function syncPinCursorOnScroll() {
+  if (performance.now() < scrollSyncSuspendedUntil) return
+  const pins = sortedPinnedMessages.value
+  if (pins.length === 0) return
+  const el = messagesEl.value
+  if (!el) return
+
+  const viewportBottom = el.scrollTop + el.clientHeight
+  for (let i = 0; i < pins.length; i++) {
+    const pin = pins[i]
+    if (!pin) continue
+    const bubble = el.querySelector(`[data-msg-id="${pin.id}"]`) as HTMLElement | null
+    if (!bubble) continue   // older history not yet in DOM — skip and try the next
+    if (bubble.offsetTop < viewportBottom) {
+      pinnedCursor.value = i
+      return
+    }
+  }
+  pinnedCursor.value = pins.length - 1
+}
+
+async function onUnpinMessage(pinnedMessageId: string) {
+  if (!activeChat.value) return
+  const prevIds = activeChat.value.pinnedMessageIds ?? []
+  const prevPins = activeChat.value.pinnedMessages ?? []
+  // Optimistic remove — the network round-trip can lag a beat. Rollback on error.
+  activeChat.value.pinnedMessageIds = prevIds.filter(id => id !== pinnedMessageId)
+  activeChat.value.pinnedMessages = prevPins.filter(p => p.id !== pinnedMessageId)
+  try {
+    await api(`/chats/${activeChat.value.id}/messages/${pinnedMessageId}/pin`, { method: 'DELETE' })
+    toast.add({ severity: 'success', summary: 'Откреплено', life: 2000 })
+  } catch (e) {
+    console.error('[unpin] failed', e)
+    activeChat.value.pinnedMessageIds = prevIds
+    activeChat.value.pinnedMessages = prevPins
+    toast.add({ severity: 'error', summary: 'Не удалось открепить', life: 4000 })
+  }
+}
+
+type ForwardPick =
+  | { kind: 'favorites' }
+  | { kind: 'crm'; chat: Chat }
+
+async function onForwardPick(pick: ForwardPick) {
+  const msg = forwardDialog.value.msg
+  if (!msg || !activeChat.value) return
+  // Optimistic close — the call usually finishes faster than the user can
+  // re-open the dialog, and an error toast tells them if it didn't.
+  forwardDialog.value = { open: false, msg: null }
+  try {
+    if (pick.kind === 'favorites') {
+      await api('/favorites/forward', { method: 'POST', body: { messageId: msg.id } })
+      toast.add({ severity: 'success', summary: 'Сохранено в Избранное', life: 2500 })
+    } else {
+      await api(`/chats/${activeChat.value.id}/messages/${msg.id}/forward`, {
+        method: 'POST',
+        body: { toChatId: pick.chat.client.telegramId },
+      })
+      toast.add({
+        severity: 'success',
+        summary: 'Переслано',
+        detail: `→ ${pick.chat.client.firstName}`,
+        life: 2500,
+      })
+    }
+  } catch (e) {
+    console.error('[forward] failed', e)
+    toast.add({ severity: 'error', summary: 'Не удалось переслать', life: 4000 })
+  }
 }
 
 // === Scroll state via composable ===
@@ -433,7 +659,6 @@ async function doDispatch(body: string, replyTo?: string) {
 async function doUpload(files: File[], caption: string): Promise<boolean> {
   uploading.value = true
   try {
-    const { api } = useApi()
     const form = new FormData()
     for (const f of files) form.append('files', f)
     if (caption) form.append('caption', caption)

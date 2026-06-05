@@ -18,6 +18,10 @@ export const messages = pgTable('messages', {
   // For replies — TG message id of the message being replied to (within same chat).
   // Stored as bigint (not uuid) so we don't need a self-FK on TDLib history we may not have.
   replyToTgId: bigint('reply_to_tg_id', { mode: 'number' }),
+  /** Set when this message arrived via TG forward — drives the "Переслано от …"
+   *  banner above the bubble. `name` is the original sender's display name
+   *  (already resolved by the worker), `date` is the original send time. */
+  forwardedFrom: jsonb('forwarded_from').$type<{ name: string; date: number }>(),
   status: messageStatus('status').notNull().default('sent'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),

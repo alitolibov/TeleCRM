@@ -30,9 +30,8 @@ const actionMeta: Record<string, { label: string; icon: string; cls: string }> =
   user_created:        { label: 'Создан сотрудник',     icon: 'pi pi-user-plus',            cls: 'lg-green' },
   user_deleted:        { label: 'Удалён сотрудник',     icon: 'pi pi-user-minus',           cls: 'lg-danger' },
 }
-const clientStatusLabels: Record<string, string> = {
-  thinking: 'Думает', consulting: 'Посоветоваться', waiting_price: 'Ждёт цену', booked: 'Забронировал', bought: 'Купил',
-}
+const { labelOf: clientStatusLabel, load: loadCloseReasons } = useCloseReasons()
+onMounted(() => loadCloseReasons())
 
 // === Filters ===
 const action = ref('')
@@ -104,7 +103,7 @@ function describe(log: LogRow): string {
       return `${m.from ? userName(m.from) : '—'} → ${m.to ? userName(m.to) : 'очередь'}${m.comment ? `: «${m.comment}»` : ''}`
     case 'chat_status_changed':
       if (m.trigger === 'taken_into_work') return 'Взят в работу'
-      if (m.to === 'closed') return `Закрыт${m.clientStatus ? ` · ${clientStatusLabels[m.clientStatus] ?? m.clientStatus}` : ''}`
+      if (m.to === 'closed') return `Закрыт${m.clientStatus ? ` · ${clientStatusLabel(m.clientStatus)}` : ''}`
       return `${chatStatusLabel(m.from)} → ${chatStatusLabel(m.to)}`
     case 'chat_escalated':
       return `${m.kind === 'unpicked' ? 'Не взят в работу' : 'Без ответа клиенту'} · уровень ${m.level}`

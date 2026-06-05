@@ -15,17 +15,26 @@ const { soundEnabled, setEnabled: setSoundEnabled, play: playSound } = useNotifi
 const isAdmin = computed(() => user.value?.role === 'admin')
 
 // === Escalation timeouts (admin only, spec 7.3) ===
-const escalation = ref({ escalationNewMinutes: 15, escalationReplyMinutes: 30 })
+const escalation = ref({
+  escalationNewMinutes: 15,
+  escalationReplyMinutes: 30,
+  escalationUnclosedMinutes: 120,
+})
 const escalationSaving = ref(false)
 const escalationSaved = ref(false)
 
 async function loadEscalation() {
   if (!isAdmin.value) return
   try {
-    const s = await api<{ escalationNewMinutes: number; escalationReplyMinutes: number }>('/settings')
+    const s = await api<{
+      escalationNewMinutes: number
+      escalationReplyMinutes: number
+      escalationUnclosedMinutes: number
+    }>('/settings')
     escalation.value = {
       escalationNewMinutes: s.escalationNewMinutes,
       escalationReplyMinutes: s.escalationReplyMinutes,
+      escalationUnclosedMinutes: s.escalationUnclosedMinutes,
     }
   } catch (e) { console.error(e) }
 }
@@ -86,6 +95,89 @@ async function confirmQrDelete() {
   } catch (e) { console.error(e) } finally { qrDeleting.value = false }
 }
 onMounted(() => qrLoad())
+
+// === Close reasons (admin only) — outcomes shown in the close-chat dialog ===
+const {
+  items: closeReasons,
+  load: crLoad,
+  create: crCreate,
+  update: crUpdate,
+  remove: crRemove,
+} = useCloseReasons()
+const crForm = ref<{ id: string | null; value: string; label: string }>({ id: null, value: '', label: '' })
+const crFormOpen = ref(false)
+const crSaving = ref(false)
+const crError = ref('')
+// True for an existing reason — the machine key (`value`) is locked since it's
+// what historical chat_results.client_status rows reference.
+const crEditing = computed(() => !!crForm.value.id)
+
+function crStartCreate() {
+  crForm.value = { id: null, value: '', label: '' }
+  crError.value = ''
+  crFormOpen.value = true
+}
+function crStartEdit(r: { id: string; value: string; label: string }) {
+  crForm.value = { id: r.id, value: r.value, label: r.label }
+  crError.value = ''
+  crFormOpen.value = true
+}
+// Auto-generate a sensible `value` from `label` while creating, so admins
+// rarely have to think about the machine key.
+function slugify(s: string): string {
+  const map: Record<string, string> = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+    и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+    с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch',
+    ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  }
+  return s.toLowerCase().split('').map(c => map[c] ?? c).join('')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 50)
+}
+watch(() => crForm.value.label, (label) => {
+  if (!crEditing.value && crFormOpen.value) crForm.value.value = slugify(label)
+})
+
+async function crSave() {
+  const label = crForm.value.label.trim()
+  const value = crForm.value.value.trim()
+  if (!label || !value) return
+  crSaving.value = true
+  crError.value = ''
+  try {
+    if (crForm.value.id) {
+      await crUpdate(crForm.value.id, { label })
+    } else {
+      await crCreate({ value, label })
+    }
+    crFormOpen.value = false
+  } catch (e: any) {
+    crError.value = e?.data?.message ?? e?.message ?? 'Не удалось сохранить статус'
+  } finally {
+    crSaving.value = false
+  }
+}
+
+const crDeleteTarget = ref<{ id: string; label: string } | null>(null)
+const crDeleting = ref(false)
+const crDeleteError = ref('')
+async function confirmCrDelete() {
+  if (!crDeleteTarget.value) return
+  crDeleting.value = true
+  crDeleteError.value = ''
+  try {
+    await crRemove(crDeleteTarget.value.id)
+    crDeleteTarget.value = null
+  } catch (e: any) {
+    crDeleteError.value = e?.data?.message ?? e?.message ?? 'Не удалось удалить'
+  } finally {
+    crDeleting.value = false
+  }
+}
+
+onMounted(() => { if (isAdmin.value) crLoad() })
 
 // === Active sessions (spec 11) ===
 interface SessionRow { id: string; userAgent: string | null; ip: string | null; createdAt: string; current: boolean }
@@ -347,6 +439,63 @@ onMounted(() => {
         </button>
       </section>
 
+      <!-- Close reasons (admin only) — outcomes available in the close-chat dialog -->
+      <section v-if="isAdmin" class="settings-card">
+        <header class="settings-card-head">
+          <i class="pi pi-flag text-primary-500" />
+          <div class="flex-1">
+            <h2 class="text-[15px] font-bold text-surface-900">Статусы закрытия чата</h2>
+            <p class="text-[12px] text-surface-500 mt-0.5">
+              Варианты результата, доступные менеджеру при закрытии чата.
+            </p>
+          </div>
+          <BaseButton variant="secondary" icon="pi pi-plus" @click="crStartCreate">Добавить</BaseButton>
+        </header>
+
+        <!-- Create / edit form -->
+        <div v-if="crFormOpen" class="qr-form">
+          <BaseInput
+            v-model="crForm.label"
+            placeholder="Название (например, Думает)"
+            :maxlength="100"
+          />
+          <BaseInput
+            v-model="crForm.value"
+            placeholder="Системный ID (латиницей, например, thinking)"
+            :maxlength="50"
+            :disabled="crEditing"
+          />
+          <p v-if="!crEditing" class="text-[11.5px] text-surface-400 -mt-1">
+            Системный ID сохраняется навсегда и используется в закрытых чатах. После создания изменить нельзя.
+          </p>
+          <p v-if="crError" class="text-[12.5px] text-red-600 font-medium">{{ crError }}</p>
+          <div class="flex items-center gap-2 justify-end">
+            <BaseButton variant="text" @click="crFormOpen = false">Отмена</BaseButton>
+            <BaseButton
+              variant="primary"
+              :loading="crSaving"
+              :disabled="!crForm.label.trim() || !crForm.value.trim()"
+              @click="crSave"
+            >{{ crEditing ? 'Сохранить' : 'Добавить' }}</BaseButton>
+          </div>
+        </div>
+
+        <!-- List -->
+        <div v-if="closeReasons.length === 0 && !crFormOpen" class="text-[13px] text-surface-400 py-3">
+          Статусы не настроены. Добавьте первый.
+        </div>
+        <div v-else class="flex flex-col gap-2 mt-1">
+          <div v-for="r in closeReasons" :key="r.id" class="qr-list-item">
+            <div class="flex-1 min-w-0">
+              <div class="text-[13.5px] font-semibold text-surface-900">{{ r.label }}</div>
+              <div class="text-[12px] text-surface-500 truncate">#{{ r.value }}</div>
+            </div>
+            <button class="qr-icon-btn" title="Изменить" @click="crStartEdit(r)"><i class="pi pi-pencil" /></button>
+            <button class="qr-icon-btn qr-icon-danger" title="Удалить" @click="crDeleteTarget = { id: r.id, label: r.label }"><i class="pi pi-trash" /></button>
+          </div>
+        </div>
+      </section>
+
       <!-- Escalation timeouts (admin only) -->
       <section v-if="isAdmin" class="settings-card">
         <header class="settings-card-head">
@@ -375,6 +524,16 @@ onMounted(() => {
           <input v-model.number="escalation.escalationReplyMinutes" type="number" min="1" max="1440" class="esc-input" />
         </div>
 
+        <div class="settings-row mt-2">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Чат не закрыт</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">
+              Минут с момента первого ответа менеджера до уведомления
+            </span>
+          </div>
+          <input v-model.number="escalation.escalationUnclosedMinutes" type="number" min="1" max="1440" class="esc-input" />
+        </div>
+
         <div class="flex items-center gap-3 mt-4">
           <BaseButton variant="primary" :loading="escalationSaving" @click="saveEscalation">Сохранить</BaseButton>
           <span v-if="escalationSaved" class="text-[12.5px] text-green-600 font-medium">
@@ -389,7 +548,7 @@ onMounted(() => {
       :open="!!qrDeleteTarget"
       icon="pi pi-trash"
       icon-variant="danger"
-      title="Удалить шаблон?" 
+      title="Удалить шаблон?"
       confirm-label="Удалить"
       confirm-variant="danger"
       :loading="qrDeleting"
@@ -397,6 +556,22 @@ onMounted(() => {
       @confirm="confirmQrDelete"
     >
       Быстрый ответ <strong>/{{ qrDeleteTarget?.name }}</strong> будет удалён без возможности восстановления.
+    </BaseConfirmDialog>
+
+    <BaseConfirmDialog
+      :open="!!crDeleteTarget"
+      icon="pi pi-trash"
+      icon-variant="danger"
+      title="Удалить статус?"
+      confirm-label="Удалить"
+      confirm-variant="danger"
+      :loading="crDeleting"
+      @update:open="(v: boolean) => !v && (crDeleteTarget = null, crDeleteError = '')"
+      @confirm="confirmCrDelete"
+    >
+      Статус <strong>«{{ crDeleteTarget?.label }}»</strong> будет удалён.
+      Если он уже используется в закрытых чатах — удалить не получится.
+      <p v-if="crDeleteError" class="text-[12.5px] text-red-600 font-medium mt-2">{{ crDeleteError }}</p>
     </BaseConfirmDialog>
 
     <BaseConfirmDialog

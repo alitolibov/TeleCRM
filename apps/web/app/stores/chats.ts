@@ -24,6 +24,11 @@ export interface ChatMessage {
   createdAt: string
   editedAt?: string | null
   replyToTgId?: number | null
+  /** Forwarded message — drives the "Переслано от …" banner above the bubble.
+   *  Source can be the original TG forward (regular chat) or a CRM forward
+   *  into Favorites; both are normalised to the same `{ name, sentAt }` shape
+   *  before reaching the bubble template. */
+  forwardedFrom?: { name: string; sentAt: string }
 }
 
 export interface Chat {
@@ -44,6 +49,12 @@ export interface Chat {
    *  Set independently of `hasCrmContact` so deleting the contact in TG
    *  (or pre-existing TG contacts) flip the button correctly. */
   inTelegramContacts?: boolean
+  /** All currently pinned messages, oldest first (latest at the end) — matches
+   *  the server's chats.pinned_message_ids stack. The banner cycles through. */
+  pinnedMessages?: ChatMessage[]
+  /** Mirror of pinned_message_ids — WS chat:updated carries this even when
+   *  the full message objects aren't included, so the array doesn't drift. */
+  pinnedMessageIds?: string[]
   messages?: ChatMessage[]
   lastMessage?: ChatMessage | null
 }

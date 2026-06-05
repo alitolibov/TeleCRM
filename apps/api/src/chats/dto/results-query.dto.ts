@@ -1,9 +1,10 @@
-import { IsOptional, IsString, IsIn } from 'class-validator'
+import { IsOptional, IsString, MaxLength } from 'class-validator'
 
 /** Filters for the saved close-results view (spec 18). */
 export class ResultsQueryDto {
-  @IsOptional() @IsIn(['thinking', 'consulting', 'waiting_price', 'booked', 'bought'])
-  clientStatus?: 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+  /** Machine key from close_reasons.value (admin-managed). */
+  @IsOptional() @IsString() @MaxLength(50)
+  clientStatus?: string
 
   /** Responsible manager uuid (admin-only filter). */
   @IsOptional() @IsString()

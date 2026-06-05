@@ -14,6 +14,7 @@ import { ContactsModule } from './contacts/contacts.module'
 import { ReportsModule } from './reports/reports.module'
 import { LogsModule } from './logs/logs.module'
 import { ConnectionMonitorModule } from './connection-monitor/connection-monitor.module'
+import { CloseReasonsModule } from './close-reasons/close-reasons.module'
 import { HealthController } from './health.controller'
 
 @Module({
@@ -40,6 +41,7 @@ import { HealthController } from './health.controller'
     ReportsModule,
     LogsModule,
     ConnectionMonitorModule,
+    CloseReasonsModule,
   ],
   controllers: [HealthController],
 })

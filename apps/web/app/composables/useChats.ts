@@ -13,7 +13,8 @@ export interface ChatListFilters {
 
 interface ChatPage { items: Chat[]; nextCursor: string | null }
 
-export type ClientStatus = 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+/** Machine key from close_reasons.value — admin-managed, not a fixed enum. */
+export type ClientStatus = string
 
 export interface ClosePayload {
   status: ClientStatus

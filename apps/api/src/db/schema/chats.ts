@@ -14,6 +14,11 @@ export const chats = pgTable('chats', {
   closedAt: timestamp('closed_at', { withTimezone: true }),
   /** When the prior Telegram history was backfilled (null = not yet pulled). */
   historySyncedAt: timestamp('history_synced_at', { withTimezone: true }),
+  /** CRM message uuids of every currently-pinned message in this chat, in
+   *  pin order (oldest first, latest at the end). Drives the "Закреплено"
+   *  banner — the latest pin is shown with a "+N" counter when there are
+   *  more. Matches Telegram's multiple-pin semantics. */
+  pinnedMessageIds: uuid('pinned_message_ids').array().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

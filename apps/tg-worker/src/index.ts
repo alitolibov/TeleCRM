@@ -10,6 +10,7 @@ import { setupHistoryWorker } from './history.js'
 import { setupFileWorker } from './files.js'
 import { setupEditor } from './editor.js'
 import { setupContactsWorker } from './contacts.js'
+import { setupActionWorkers } from './actions.js'
 
 console.log(`[tg-worker] starting ${APP_NAME}...`)
 
@@ -48,6 +49,7 @@ try {
   setupFileWorker(client)
   setupEditor(client)
   setupContactsWorker(client)
+  setupActionWorkers(client)
 
   console.log('[tg-worker] ready — listening for messages...')
 } catch (err) {

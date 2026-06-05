@@ -16,14 +16,34 @@ import type {
   TgMessageEditedEvent,
   TgMessageDeletedEvent,
   TgMessageIdRemapEvent,
+  TgMessagePinnedEvent,
   TgClientRefreshRequest,
   TgClientRefreshResponse,
+  TgPinJob,
+  TgForwardJob,
+  TgChatSearchRequest,
+  TgChatSearchResponse,
 } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { DRIZZLE } from '../db/drizzle.module'
 import * as schema from '../db/schema'
 import { ChatsGateway } from './chats.gateway'
 import { NotificationsService } from '../notifications/notifications.service'
+import { CloseReasonsService } from '../close-reasons/close-reasons.service'
+
+/** Compact text for the "📌 Закреплено: …" service note. Mirrors what the
+ *  chat-list preview shows so the note reads like Telegram's pin-service. */
+function pinNotePreview(content: any): string {
+  if (!content) return '📌 Сообщение закреплено'
+  const short = (s: string) => (s.length > 60 ? s.slice(0, 60) + '…' : s)
+  if (content.type === 'text')     return `📌 Закреплено: ${short(content.text ?? '')}`
+  if (content.type === 'photo')    return `📌 Закреплено фото${content.caption ? `: ${short(content.caption)}` : ''}`
+  if (content.type === 'video')    return `📌 Закреплено видео${content.caption ? `: ${short(content.caption)}` : ''}`
+  if (content.type === 'voice')    return '📌 Закреплено голосовое сообщение'
+  if (content.type === 'document') return `📌 Закреплён файл${content.fileName ? `: ${short(content.fileName)}` : ''}`
+  if (content.type === 'sticker')  return `📌 Закреплён стикер${content.emoji ? ` ${content.emoji}` : ''}`
+  return '📌 Сообщение закреплено'
+}
 
 @Injectable()
 export class ChatsService implements OnModuleInit, OnModuleDestroy {
@@ -31,6 +51,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   private editEvents!: QueueEvents
   private deleteEvents!: QueueEvents
   private clientRefreshEvents!: QueueEvents
+  private chatSearchEvents!: QueueEvents
 
   constructor(
     @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
@@ -39,7 +60,11 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(REDIS_QUEUES.tgEdit) private editQueue: Queue<TgEditJob>,
     @InjectQueue(REDIS_QUEUES.tgDelete) private deleteQueue: Queue<TgDeleteJob>,
     @InjectQueue(REDIS_QUEUES.tgClientRefresh) private clientRefreshQueue: Queue<TgClientRefreshRequest, TgClientRefreshResponse>,
+    @InjectQueue(REDIS_QUEUES.tgPin) private pinQueue: Queue<TgPinJob>,
+    @InjectQueue(REDIS_QUEUES.tgForward) private forwardQueue: Queue<TgForwardJob>,
+    @InjectQueue(REDIS_QUEUES.tgChatSearch) private chatSearchQueue: Queue<TgChatSearchRequest, TgChatSearchResponse>,
     private configService: ConfigService,
+    private closeReasons: CloseReasonsService,
     @Optional() private gateway: ChatsGateway,
     @Optional() private notifications?: NotificationsService,
   ) {}
@@ -51,6 +76,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     this.editEvents = new QueueEvents(REDIS_QUEUES.tgEdit, { connection })
     this.deleteEvents = new QueueEvents(REDIS_QUEUES.tgDelete, { connection })
     this.clientRefreshEvents = new QueueEvents(REDIS_QUEUES.tgClientRefresh, { connection })
+    this.chatSearchEvents = new QueueEvents(REDIS_QUEUES.tgChatSearch, { connection })
   }
 
   async onModuleDestroy() {
@@ -58,6 +84,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     await this.editEvents?.close().catch(() => {})
     await this.deleteEvents?.close().catch(() => {})
     await this.clientRefreshEvents?.close().catch(() => {})
+    await this.chatSearchEvents?.close().catch(() => {})
   }
 
   async processIncomingEvent(event: TgMessageEvent) {
@@ -186,6 +213,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         status: 'sent',
         createdAt: new Date(event.date * 1000),
         replyToTgId: event.replyToMessageId ?? null,
+        forwardedFrom: event.forwardedFrom ?? null,
       })
       .onConflictDoNothing()
       .returning()
@@ -256,7 +284,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         lastMessage: message,
       })
     }
-    this.gateway?.emitNewMessage(chat.id, { ...message, client })
+    this.gateway?.emitNewMessage(chat.id, { ...this.normalizeForwardedFrom(message), client })
 
     // 7. Browser push (spec 10.2): a client message goes to the responsible
     // manager; an unassigned new chat (everyone offline) goes to admins. The
@@ -535,7 +563,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     if (role === 'manager') conds.push(eq(schema.chats.assignedTo, userId))
     else if (opts.assignedTo) conds.push(eq(schema.chats.assignedTo, opts.assignedTo))
 
-    if (opts.clientStatus) conds.push(eq(schema.chatResults.clientStatus, opts.clientStatus as any))
+    if (opts.clientStatus) conds.push(eq(schema.chatResults.clientStatus, opts.clientStatus))
     if (opts.dateFrom) conds.push(sql`${schema.chatResults.updatedAt} >= ${new Date(opts.dateFrom)}`)
     if (opts.dateTo) conds.push(sql`${schema.chatResults.updatedAt} <= ${new Date(opts.dateTo)}`)
 
@@ -630,6 +658,141 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return snap
   }
 
+  /**
+   * Pin or unpin a message in the client's TG chat (visible to the client too).
+   * Server-side translation: chat uuid → telegram chat id, message uuid →
+   * telegram message id, then enqueue. Errors bubble up so the API returns 4xx
+   * when the chat/message isn't ours.
+   */
+  async pinMessage(chatId: string, messageId: string, pin: boolean) {
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq }) => eq(m.id, messageId),
+      with: { chat: { with: { client: true } } },
+    })
+    if (!message || message.chatId !== chatId) {
+      throw new NotFoundException('Message not found')
+    }
+    if (!message.telegramMessageId) {
+      throw new BadRequestException('Message has no Telegram id yet')
+    }
+
+    // Capture array contents BEFORE the optimistic update so the system-note
+    // insertion below knows whether this was truly a new pin (and so the
+    // TDLib echo handler can skip its own insert — without this snapshot
+    // both paths would either both insert or both skip, depending on race).
+    const beforeRow = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      columns: { pinnedMessageIds: true },
+    })
+    const wasPinned = beforeRow?.pinnedMessageIds.includes(messageId) ?? false
+
+    await this.pinQueue.add('pin', {
+      chatId: message.chat.client.telegramId,
+      messageId: message.telegramMessageId,
+      pin,
+    })
+
+    // Append (or remove) the pin in the chat's stack, latest at the end.
+    // Telegram allows several pinned messages per chat — we mirror that so
+    // the banner can scroll through all of them. Atomic SQL avoids a
+    // read-modify-write race with concurrent pin clicks.
+    const updated = await this.db
+      .update(schema.chats)
+      .set({
+        pinnedMessageIds: pin
+          ? sql`(SELECT ARRAY(SELECT DISTINCT unnest(${schema.chats.pinnedMessageIds} || ARRAY[${messageId}::uuid])))`
+          : sql`array_remove(${schema.chats.pinnedMessageIds}, ${messageId}::uuid)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.chats.id, chatId))
+      .returning({ pinnedMessageIds: schema.chats.pinnedMessageIds })
+    const pinnedMessageIds = updated[0]?.pinnedMessageIds ?? []
+    const pinnedMessages = await this.hydratePinnedMessages(pinnedMessageIds)
+
+    // Telegram drops a "X закрепил сообщение" service note at the bottom of
+    // the chat on each fresh pin (not unpin). Insert it from here for
+    // CRM-initiated pins — applyExternalPin will recognise the array no
+    // longer changes on its echo and skip its own insert.
+    if (pin && !wasPinned) {
+      const [sysMsg] = await this.db.insert(schema.messages).values({
+        chatId,
+        telegramMessageId: Date.now(),   // synthetic — never collides with real TG ids
+        senderType: 'system',
+        senderId: null,
+        contentType: 'text',
+        content: { type: 'text', text: pinNotePreview(message.content) },
+        isRead: true,
+        status: 'sent',
+        createdAt: new Date(),
+      }).returning()
+      if (sysMsg) {
+        this.gateway?.emitNewMessage(chatId, { ...sysMsg, client: message.chat.client })
+      }
+    }
+
+    this.gateway?.emitChatUpdated({
+      id: chatId,
+      pinnedMessageIds,
+      pinnedMessages,
+    } as any)
+    return { queued: true, pinnedMessageIds }
+  }
+
+  /** Fetch the message rows for a pin id array and return them sorted by
+   *  message date, NEWEST first. The pin banner reads index 0 as "today's
+   *  pin" and walks down toward older messages — sorting here keeps the
+   *  frontend's banner step logic dead simple. */
+  private async hydratePinnedMessages(ids: string[]) {
+    if (ids.length === 0) return []
+    const rows = await this.db.query.messages.findMany({
+      where: (m, { inArray }) => inArray(m.id, ids),
+    })
+    return rows
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map((m) => this.normalizeForwardedFrom(m))
+  }
+
+  /**
+   * Forward a CRM message into any Telegram chat we can reach. The target id
+   * is the TG chat id (positive for users, negative for groups/channels). If
+   * the destination matches a known CRM client, processIncomingEvent will
+   * pick up the echo and reflect it in the right CRM chat naturally.
+   */
+  async forwardMessageToTg(chatId: string, messageId: string, toTgChatId: number) {
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq }) => eq(m.id, messageId),
+      with: { chat: { with: { client: true } } },
+    })
+    if (!message || message.chatId !== chatId) {
+      throw new NotFoundException('Message not found')
+    }
+    if (!message.telegramMessageId) {
+      throw new BadRequestException('Message has no Telegram id yet')
+    }
+    await this.forwardQueue.add('forward', {
+      fromChatId: message.chat.client.telegramId,
+      messageIds: [message.telegramMessageId],
+      toChatId: toTgChatId,
+    })
+    return { queued: true }
+  }
+
+  /**
+   * Search TG chats by free text. Powers the forward picker. Short budget so
+   * a slow remote search doesn't hang the dialog.
+   */
+  async searchTgChats(q: string, limit = 20): Promise<TgChatSearchResponse> {
+    const job = await this.chatSearchQueue.add('search', { q, limit }, {
+      removeOnComplete: 50,
+      removeOnFail: 25,
+    })
+    try {
+      return (await job.waitUntilFinished(this.chatSearchEvents, 5_000)) as TgChatSearchResponse
+    } catch {
+      return { items: [] }
+    }
+  }
+
   async findOne(chatId: string) {
     let chat = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
@@ -683,22 +846,44 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       limit: 50,
     })
 
+    // Hydrate every pinned message (Telegram allows several per chat). Goes
+    // through `hydratePinnedMessages` so the banner gets them sorted by
+    // message date — identical to what `pinMessage` / `applyExternalPin`
+    // emit via WS, so cursor positions stay consistent across reloads.
+    const pinnedMessages = await this.hydratePinnedMessages(chat.pinnedMessageIds)
+
     return {
       ...chat,
       hasCrmContact,
       inTelegramContacts: chat.client.inTelegramContacts ?? false,
-      messages: recent.reverse(),
+      pinnedMessages,
+      messages: recent.reverse().map((m) => this.normalizeForwardedFrom(m)),
     }
   }
 
   async getMessages(chatId: string, before?: string) {
-    return this.db.query.messages.findMany({
+    const rows = await this.db.query.messages.findMany({
       where: before
         ? (m, { eq, lt, and }) => and(eq(m.chatId, chatId), eq(m.isDeleted, false), lt(m.createdAt, new Date(before)))
         : (m, { eq, and }) => and(eq(m.chatId, chatId), eq(m.isDeleted, false)),
       orderBy: (m, { desc }) => desc(m.createdAt),
       limit: 50,
     })
+    return rows.map((m) => this.normalizeForwardedFrom(m))
+  }
+
+  /** Convert the DB row's `{ name, date(unix) }` forward snapshot into the
+   *  `{ name, sentAt(ISO) }` shape MessageBubble expects, so it lines up with
+   *  the Favorites-side composable. */
+  private normalizeForwardedFrom<T extends { forwardedFrom?: { name: string; date: number } | null }>(msg: T): T {
+    if (!msg.forwardedFrom) return msg
+    return {
+      ...msg,
+      forwardedFrom: {
+        name: msg.forwardedFrom.name,
+        sentAt: new Date(msg.forwardedFrom.date * 1000).toISOString(),
+      },
+    } as unknown as T
   }
 
   /**
@@ -1008,7 +1193,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async close(chatId: string, userId: string, userRole: 'admin' | 'manager', result?: {
-    status: 'thinking' | 'consulting' | 'waiting_price' | 'booked' | 'bought'
+    status: string
     flightFrom?: string
     flightTo?: string
     dates?: string
@@ -1016,6 +1201,11 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     comment?: string
   }) {
     if (result) {
+      // Validate against admin-managed close_reasons; reject unknown keys so we
+      // never persist a status that the Results page can't render a label for.
+      const ok = await this.closeReasons.exists(result.status)
+      if (!ok) throw new BadRequestException('Неизвестный статус закрытия чата')
+
       const flight = [result.flightFrom?.trim(), result.flightTo?.trim()]
         .filter(Boolean)
         .join(' → ') || null
@@ -1680,6 +1870,80 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         eq(schema.messages.chatId, chat.id),
         eq(schema.messages.telegramMessageId, event.oldMessageId),
       ))
+  }
+
+  /**
+   * Reflect a pin/unpin done outside the CRM (or echoed from our own pin) in
+   * the chats.pinned_message_ids array. Idempotent — the same event arriving
+   * twice is fine. Emits chat:updated so connected managers see the banner
+   * flip without a refetch.
+   */
+  async applyExternalPin(event: TgMessagePinnedEvent) {
+    const message = await this.db.query.messages.findFirst({
+      where: (m, { eq, and }) => and(
+        eq(m.telegramMessageId, event.messageId),
+        eq(m.chatId, sql`(SELECT id FROM chats WHERE client_id = (SELECT id FROM clients WHERE telegram_id = ${event.chatId}))`),
+      ),
+      columns: { id: true, chatId: true, content: true },
+    })
+    if (!message) return    // we don't have this msg yet — re-syncs will catch it
+
+    // Snapshot the array before/after to tell apart "truly changed" (TDLib
+    // first echo) from "already known" (idempotent replay) — only the first
+    // should drop a system note at the bottom of the chat.
+    const before = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, message.chatId),
+      columns: { pinnedMessageIds: true, clientId: true },
+    })
+    if (!before) return
+
+    const updated = await this.db
+      .update(schema.chats)
+      .set({
+        pinnedMessageIds: event.isPinned
+          ? sql`(SELECT ARRAY(SELECT DISTINCT unnest(${schema.chats.pinnedMessageIds} || ARRAY[${message.id}::uuid])))`
+          : sql`array_remove(${schema.chats.pinnedMessageIds}, ${message.id}::uuid)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.chats.id, message.chatId))
+      .returning({ pinnedMessageIds: schema.chats.pinnedMessageIds })
+
+    const after = updated[0]?.pinnedMessageIds ?? []
+    const wasPinned = before.pinnedMessageIds.includes(message.id)
+    const isPinned = after.includes(message.id)
+
+    // Drop a service note only when the pin truly transitioned from "not
+    // pinned" → "pinned" in our array. CRM-initiated pins handle the note in
+    // pinMessage and have already filled the array before this echo arrives,
+    // so wasPinned will be true here and we'll correctly skip. Same goes for
+    // any double-fire of the TDLib echo itself.
+    if (event.isPinned && !wasPinned && isPinned) {
+      const text = pinNotePreview(message.content)
+      const [sysMsg] = await this.db.insert(schema.messages).values({
+        chatId: message.chatId,
+        telegramMessageId: Date.now(),     // synthetic — never collides with real TG ids
+        senderType: 'system',
+        senderId: null,
+        contentType: 'text',
+        content: { type: 'text', text },
+        isRead: true,
+        status: 'sent',
+        createdAt: new Date(),
+      }).returning()
+
+      const client = await this.db.query.clients.findFirst({
+        where: (c, { eq }) => eq(c.id, before.clientId),
+      })
+      if (sysMsg) {
+        this.gateway?.emitNewMessage(message.chatId, { ...sysMsg, client })
+      }
+    }
+
+    this.gateway?.emitChatUpdated({
+      id: message.chatId,
+      pinnedMessageIds: after,
+      pinnedMessages: await this.hydratePinnedMessages(after),
+    } as any)
   }
 
 }
