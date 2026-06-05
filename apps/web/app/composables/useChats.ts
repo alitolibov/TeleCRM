@@ -66,7 +66,9 @@ export function useChats() {
   })
 
   function buildListQuery(cursor?: string | null): string {
-    const p = new URLSearchParams({ limit: '30' })
+    // Page size — 20 fits roughly one viewport on a typical sidebar; scroll
+    // near the bottom auto-loads the next 20 via `loadMoreChats`.
+    const p = new URLSearchParams({ limit: '20' })
     if (cursor) p.set('cursor', cursor)
     if (filters.status) p.set('status', filters.status)
     if (filters.assignedTo) p.set('assignedTo', filters.assignedTo)

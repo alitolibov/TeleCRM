@@ -1,0 +1,1 @@
+ALTER TABLE "app_settings" ADD COLUMN "max_chats_per_user" integer DEFAULT 10 NOT NULL;

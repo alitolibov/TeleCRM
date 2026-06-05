@@ -12,6 +12,10 @@ export const appSettings = pgTable('app_settings', {
   escalationReplyMinutes: integer('escalation_reply_minutes').notNull().default(30),
   /** Minutes an 'active' chat may stay open (unclosed) before escalating. */
   escalationUnclosedMinutes: integer('escalation_unclosed_minutes').notNull().default(120),
+  /** Max simultaneous non-closed chats per online employee. Round-robin
+   *  auto-distribute fills people up to this cap; once everyone is at it,
+   *  the rest queues. Default 10 — matches the client's spec. */
+  maxChatsPerUser: integer('max_chats_per_user').notNull().default(10),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
 

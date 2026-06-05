@@ -14,11 +14,12 @@ const { soundEnabled, setEnabled: setSoundEnabled, play: playSound } = useNotifi
 
 const isAdmin = computed(() => user.value?.role === 'admin')
 
-// === Escalation timeouts (admin only, spec 7.3) ===
+// === Escalation timeouts + auto-distribute cap (admin only, spec 7.3) ===
 const escalation = ref({
   escalationNewMinutes: 15,
   escalationReplyMinutes: 30,
   escalationUnclosedMinutes: 120,
+  maxChatsPerUser: 10,
 })
 const escalationSaving = ref(false)
 const escalationSaved = ref(false)
@@ -30,11 +31,13 @@ async function loadEscalation() {
       escalationNewMinutes: number
       escalationReplyMinutes: number
       escalationUnclosedMinutes: number
+      maxChatsPerUser: number
     }>('/settings')
     escalation.value = {
       escalationNewMinutes: s.escalationNewMinutes,
       escalationReplyMinutes: s.escalationReplyMinutes,
       escalationUnclosedMinutes: s.escalationUnclosedMinutes,
+      maxChatsPerUser: s.maxChatsPerUser,
     }
   } catch (e) { console.error(e) }
 }
@@ -532,6 +535,16 @@ onMounted(() => {
             </span>
           </div>
           <input v-model.number="escalation.escalationUnclosedMinutes" type="number" min="1" max="1440" class="esc-input" />
+        </div>
+
+        <div class="settings-row mt-2">
+          <div class="flex flex-col">
+            <span class="text-[14px] font-semibold text-surface-800">Лимит чатов на сотрудника</span>
+            <span class="text-[11.5px] text-surface-400 mt-0.5">
+              Максимум активных чатов, которые один человек может вести одновременно
+            </span>
+          </div>
+          <input v-model.number="escalation.maxChatsPerUser" type="number" min="1" max="100" class="esc-input" />
         </div>
 
         <div class="flex items-center gap-3 mt-4">

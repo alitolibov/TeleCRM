@@ -72,6 +72,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     @Optional() private notifications?: NotificationsService,
   ) {}
 
+  /** Periodic safety net: drain any ownerless non-closed chats every 30 s.
+   *  Most distributions happen on event triggers (user-online, chat-close,
+   *  transfer-to-queue, settings cap-change). This sweep covers the gaps —
+   *  e.g. when admin raises the cap while no users toggle status and no
+   *  chats close, the existing queue still gets picked up within 30 s. */
+  private distributeSweepTimer: ReturnType<typeof setInterval> | null = null
+
   async onModuleInit() {
     const url = new URL(this.configService.get('REDIS_URL', 'redis://localhost:6379'))
     const connection = { host: url.hostname, port: Number(url.port) || 6379 }
@@ -80,6 +87,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     this.deleteEvents = new QueueEvents(REDIS_QUEUES.tgDelete, { connection })
     this.clientRefreshEvents = new QueueEvents(REDIS_QUEUES.tgClientRefresh, { connection })
     this.chatSearchEvents = new QueueEvents(REDIS_QUEUES.tgChatSearch, { connection })
+
+    this.distributeSweepTimer = setInterval(() => {
+      this.distributeQueuedChats().catch((e) =>
+        console.error('[api] periodic distribute sweep failed:', e?.message),
+      )
+    }, 30_000)
   }
 
   async onModuleDestroy() {
@@ -88,6 +101,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     await this.deleteEvents?.close().catch(() => {})
     await this.clientRefreshEvents?.close().catch(() => {})
     await this.chatSearchEvents?.close().catch(() => {})
+    if (this.distributeSweepTimer) clearInterval(this.distributeSweepTimer)
   }
 
   async processIncomingEvent(event: TgMessageEvent) {
@@ -383,20 +397,30 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     //      just woke up jumps the queue.
     //   3. Tie-break by `createdAt` ASC so identical activity doesn't make
     //      one chat starve.
+    //
+    // Note: Postgres requires `NULLS LAST` to come AFTER `DESC` in a sort
+    // spec. Wrapping `sql\`… NULLS LAST\`` in Drizzle's `desc()` emits
+    // `… NULLS LAST desc`, which is a syntax error and was silently killing
+    // every drain attempt — build the fragments by hand instead.
     const queued = await this.db.query.chats.findMany({
       where: (c, { ne, and, isNull }) => and(ne(c.status, 'closed'), isNull(c.assignedTo)),
-      orderBy: (c, { asc, desc, sql }) => [
-        desc(sql`${c.unreadCount} > 0`),     // unread bucket first
-        desc(sql`${c.lastMessageAt} NULLS LAST`),
-        asc(c.createdAt),
+      orderBy: (c, { asc, sql }) => [
+        sql`(${c.unreadCount} > 0) desc`,                // unread bucket first
+        sql`${c.lastMessageAt} desc nulls last`,         // most recent next
+        asc(c.createdAt),                                // FIFO tie-breaker
       ],
       limit: 50,
     })
     if (queued.length === 0) return
 
+    console.log(`[api] distributeQueuedChats: ${queued.length} ownerless chat(s) in pool`)
+    let drained = 0
     for (const chat of queued) {
       const assignee = await this.pickAssignee()
-      if (!assignee) return     // everyone is busy or offline — stop draining
+      if (!assignee) {
+        console.log(`[api] distributeQueuedChats: stopped after ${drained} — no eligible user (${queued.length - drained} remain queued)`)
+        return
+      }
 
       await this.autoAssignChat(chat.id, assignee, 'auto_distribute_on_online')
 
@@ -409,20 +433,23 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         assignedTo: assignee,
         assignedUser,
       })
-      console.log(`[api] drained queued chat ${chat.id} → ${assignee}`)
+      drained++
+      console.log(`[api] drained queued chat ${chat.id} → ${assignee} (${drained}/${queued.length})`)
     }
   }
 
   /**
-   * Round-robin auto-distribution: pick the online user who currently has
-   * zero active chats (status `new` or `active`) and whose last auto-assign
-   * is the oldest (NULLS FIRST). Role doesn't matter — admins are in the
-   * rotation too.
+   * Round-robin auto-distribution: pick the online user whose active-chat
+   * load is below `app_settings.max_chats_per_user` and whose last
+   * auto-assign is the oldest (NULLS FIRST), giving a fair circle around
+   * the team. Role doesn't matter — admins are in the rotation too.
    *
-   * Returns null when everyone is either offline or already holding a chat —
-   * the queue then waits for someone to close or come online.
+   * Returns null when everyone is offline or at the cap — the queue then
+   * waits for someone to close a chat, come online, or for the admin to
+   * raise the cap.
    */
   async pickAssignee(excludeUserId?: string): Promise<string | null> {
+    const cap = await this.getMaxChatsPerUser()
     const result = await this.db.execute<{ id: string }>(sql`
       SELECT u.id
       FROM ${schema.users} u
@@ -432,11 +459,20 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         AND u.deleted_at IS NULL
         ${excludeUserId ? sql`AND u.id <> ${excludeUserId}` : sql``}
       GROUP BY u.id, u.last_auto_assigned_at
-      HAVING COUNT(c.id) = 0
+      HAVING COUNT(c.id) < ${cap}
       ORDER BY u.last_auto_assigned_at ASC NULLS FIRST, u.id ASC
       LIMIT 1
     `)
     return result.rows[0]?.id ?? null
+  }
+
+  /** Read the configurable per-user chat cap from `app_settings`. Falls back
+   *  to 10 on a fresh database where the row hasn't been seeded yet. */
+  private async getMaxChatsPerUser(): Promise<number> {
+    const row = await this.db.query.appSettings.findFirst({
+      columns: { maxChatsPerUser: true },
+    })
+    return row?.maxChatsPerUser ?? 10
   }
 
   /**
@@ -1258,6 +1294,14 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       this.notifications?.sendToUser(recipientId, { title, body: note, chatId, tag: chatId, force: true }).catch(() => {})
       // In-app notification (center + toast) — reliable regardless of OS push.
       this.gateway?.emitToUsers([recipientId], 'notify', { type: 'transfer', title, body: note, chatId })
+    }
+
+    // A transfer-to-queue can free other ownerless chats too — drain the
+    // backlog now instead of waiting for the next status toggle.
+    if (!toUserId) {
+      this.distributeQueuedChats().catch((e) =>
+        console.error('[api] post-transfer distribute failed:', e?.message),
+      )
     }
 
     return updated
