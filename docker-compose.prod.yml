@@ -42,9 +42,11 @@ services:
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-30d}
       WEB_URL: ${WEB_URL}
       API_PORT: 3000
+      FAVORITES_DIR: /data/favorites   # persisted on the favorites_data volume
     volumes:
       - tdlib_data:/data            # so /files/* can serve TDLib-downloaded media
       - uploads_data:/tmp/telecrm-uploads
+      - favorites_data:/data/favorites   # personal "Saved Messages" media outlives container rebuilds
 
   tg-worker:
     build:
@@ -97,5 +99,6 @@ volumes:
   redis_data:
   tdlib_data:
   uploads_data:
+  favorites_data:
   caddy_data:
   caddy_config:
