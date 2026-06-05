@@ -489,6 +489,30 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     return row?.maxChatsPerUser ?? 10
   }
 
+  /** Count a user's currently-open chats (new + active). The cap-check
+   *  helper used everywhere the assignment cap matters outside of
+   *  pickAssignee (which inlines the same logic via HAVING). */
+  private async getActiveCountFor(userId: string): Promise<number> {
+    const result = await this.db.execute<{ count: string }>(sql`
+      SELECT COUNT(c.id)::text AS count
+      FROM ${schema.chats} c
+      WHERE c.assigned_to = ${userId}
+        AND c.status IN ('new', 'active')
+    `)
+    return Number(result.rows[0]?.count ?? 0)
+  }
+
+  /** True when the user is already at or above the per-user chat cap.
+   *  Used to short-circuit manual claim / admin-takeover paths so the cap
+   *  setting is a HARD limit, not just an auto-distribute hint. */
+  private async isAtCap(userId: string): Promise<boolean> {
+    const [cap, count] = await Promise.all([
+      this.getMaxChatsPerUser(),
+      this.getActiveCountFor(userId),
+    ])
+    return count >= cap
+  }
+
   /**
    * Persists an auto-distribution: updates the chat, advances the round-robin
    * cursor on the user, and writes the action log. Gateway emit stays at the
@@ -1158,8 +1182,16 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   async assign(chatId: string, userId: string) {
     const prev = await this.db.query.chats.findFirst({
       where: (c, { eq }) => eq(c.id, chatId),
-      columns: { status: true },
+      columns: { status: true, assignedTo: true },
     })
+
+    // Cap is a hard limit on manual claims too — otherwise the "10 chats
+    // per user" setting becomes meaningless. Skip the check if the user
+    // already owns this chat (claiming their own chat is a no-op).
+    if (prev?.assignedTo !== userId && await this.isAtCap(userId)) {
+      const cap = await this.getMaxChatsPerUser()
+      throw new BadRequestException(`Превышен лимит чатов (${cap}). Закройте чаты, прежде чем брать новые.`)
+    }
 
     await this.db
       .update(schema.chats)
@@ -1227,6 +1259,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       const target = await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, toUserId) })
       if (!target || target.deletedAt) throw new BadRequestException('Сотрудник не найден')
       if (toUserId === fromUserId) throw new BadRequestException('Чат уже у этого сотрудника')
+      // Don't push the recipient over the hard cap — otherwise the per-user
+      // limit setting becomes a polite suggestion.
+      if (await this.isAtCap(toUserId)) {
+        const cap = await this.getMaxChatsPerUser()
+        throw new BadRequestException(`У сотрудника уже ${cap} чатов — лимит достигнут. Передайте другому или верните в очередь.`)
+      }
     }
 
     // The chat becomes 'new' so the recipient (or queue) sees it as fresh.
@@ -1354,6 +1392,13 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     if (actorRole !== 'admin') return false
     if (currentAssignedTo === actorId) return false
 
+    // Hard cap: an admin acting on someone else's chat normally takes
+    // ownership for attribution. When admin is already at cap that
+    // attribution can't fit — keep the chat with its current owner (or in
+    // the queue if unowned). The admin's action still records via the
+    // caller's own action_logs entry.
+    if (await this.isAtCap(actorId)) return false
+
     const isClaim = !currentAssignedTo
     await this.db.insert(schema.actionLogs).values({
       action: isClaim ? 'chat_assigned' : 'chat_transferred',
@@ -1474,60 +1519,16 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       unreadCount: 0,
     })
 
-    // Close → drain. Two-step on purpose:
-    //   1. `handOneToCloser` guarantees the closer gets ONE chat back —
-    //      even if they're above cap. Admins frequently end up over the
-    //      cap via manual claims (maybeAdminTakeover) and would otherwise
-    //      have to close several chats before round-robin re-eligibles
-    //      them. That breaks the "close one, get one" mental model.
-    //   2. `distributeQueuedChats` then handles everyone else by the
-    //      normal cap-respecting round-robin (so other online employees
-    //      with capacity still get their share).
-    ;(async () => {
-      await this.handOneToCloser(userId).catch((e) =>
-        console.error('[api] hand-one-to-closer failed:', e),
-      )
-      await this.distributeQueuedChats().catch((e) =>
-        console.error('[api] distribute after close failed:', e),
-      )
-    })()
+    // Close → drain. The closer's active count just dropped by one, so if
+    // they were at cap they're now eligible. distributeQueuedChats picks
+    // them up via the normal cap-respecting round-robin. No special-case
+    // bypass: that's what caused admins to lock in over-cap state earlier
+    // (every close earned them another chat, even at 12 with cap=10).
+    this.distributeQueuedChats().catch((e) =>
+      console.error('[api] distribute after close failed:', e),
+    )
 
     return chat
-  }
-
-  /**
-   * Hand the next queued chat (live, ownerless, highest priority) to a
-   * specific user, bypassing the per-user cap. Used as the post-close
-   * feedback loop: closing a chat earns the closer one back from the queue
-   * regardless of their current load. Returns silently when there's
-   * nothing in the queue, the user is missing, or already soft-deleted.
-   */
-  private async handOneToCloser(closerUserId: string): Promise<void> {
-    // Skip the `status='online'` check on purpose — closing a chat is
-    // itself proof the user is live; the DB presence row may lag a beat.
-    const closer = await this.db.query.users.findFirst({
-      where: (u, { and, eq, isNull }) => and(eq(u.id, closerUserId), isNull(u.deletedAt)),
-      columns: { id: true, firstName: true, username: true },
-    })
-    if (!closer) return
-
-    const next = await this.db.query.chats.findFirst({
-      where: (c, { isNull, ne, and }) => and(isNull(c.assignedTo), ne(c.status, 'closed')),
-      orderBy: (c, { asc, sql }) => [
-        sql`(${c.unreadCount} > 0) desc`,
-        sql`${c.lastMessageAt} desc nulls last`,
-        asc(c.createdAt),
-      ],
-    })
-    if (!next) return
-
-    await this.autoAssignChat(next.id, closerUserId, 'after_close')
-    this.gateway?.emitChatUpdated({
-      id: next.id,
-      assignedTo: closerUserId,
-      assignedUser: { id: closer.id, firstName: closer.firstName, username: closer.username },
-    })
-    console.log(`[api] post-close: handed chat ${next.id} → ${closerUserId}`)
   }
 
   async getClientInfo(chatId: string) {
@@ -1705,7 +1706,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     //  - admin replied to someone else's chat → admin takes it over
     //    (admin intervening is implicit reassignment — they wouldn't be writing
     //    in another manager's chat by accident)
-    const adminTakingOver = senderRole === 'admin' && chat.assignedTo && chat.assignedTo !== senderId
+    // Admin replying in someone else's chat normally takes it over for
+    // attribution. Drop the takeover at cap so the per-user limit holds —
+    // the message still goes through, the chat just stays with its
+    // original owner.
+    const wantsTakeover = senderRole === 'admin' && !!chat.assignedTo && chat.assignedTo !== senderId
+    const adminTakingOver = wantsTakeover && !(await this.isAtCap(senderId))
     const ownerUpdate = (!chat.assignedTo || adminTakingOver) ? { assignedTo: senderId } : {}
     if (adminTakingOver) {
       await this.db.insert(schema.actionLogs).values({
@@ -1889,7 +1895,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     const statusUpdate = chat.status === 'closed' ? { status: 'active' as const, closedAt: null } : {}
     // Same ownership rules as sendMessage: unassigned → claim; admin replying
     // to someone else's chat → admin takes over.
-    const adminTakingOver = senderRole === 'admin' && chat.assignedTo && chat.assignedTo !== senderId
+    // Admin replying in someone else's chat normally takes it over for
+    // attribution. Drop the takeover at cap so the per-user limit holds —
+    // the message still goes through, the chat just stays with its
+    // original owner.
+    const wantsTakeover = senderRole === 'admin' && !!chat.assignedTo && chat.assignedTo !== senderId
+    const adminTakingOver = wantsTakeover && !(await this.isAtCap(senderId))
     const ownerUpdate = (!chat.assignedTo || adminTakingOver) ? { assignedTo: senderId } : {}
     if (adminTakingOver) {
       await this.db.insert(schema.actionLogs).values({
