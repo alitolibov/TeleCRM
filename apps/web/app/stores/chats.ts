@@ -99,6 +99,28 @@ export const useChatsStore = defineStore('chats', () => {
     if (fresh.length) chats.value = [...chats.value, ...fresh]
   }
 
+  /** API's chat-list sort key — `coalesce(last_message_at, created_at) DESC`.
+   *  Mirror it on the client so off-page chats arriving via WS land in the
+   *  right slot instead of being blindly prepended (which made days-old chats
+   *  appear above today's after auto-distribute). */
+  function chatSortKey(c: Chat): number {
+    return new Date(c.lastMessageAt ?? c.createdAt).getTime()
+  }
+
+  /** Insert a chat into the already-sorted list at the correct position. */
+  function insertChatSorted(chat: Chat) {
+    const key = chatSortKey(chat)
+    const list = chats.value
+    let lo = 0, hi = list.length
+    // First index whose sortKey < this chat's → that's where we go (DESC sort).
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (chatSortKey(list[mid]!) < key) hi = mid
+      else lo = mid + 1
+    }
+    chats.value = [...list.slice(0, lo), chat, ...list.slice(lo)]
+  }
+
   function setActiveChat(chat: Chat) {
     activeChat.value = chat
     messages.value = chat.messages ?? []
@@ -137,9 +159,11 @@ export const useChatsStore = defineStore('chats', () => {
 
     // If we don't have the chat yet but it's now visible, add it (handles
     // auto-distribute that targets this manager — server emits chat:updated,
-    // not chat:new, so we'd otherwise miss the chat entirely).
+    // not chat:new, so we'd otherwise miss the chat entirely). Insert at the
+    // sorted position (NOT the top) — auto-distribute can pull in chats that
+    // are days old, which would otherwise jump above today's activity.
     if (!existing && visible) {
-      chats.value = [projectedChat, ...chats.value]
+      insertChatSorted(projectedChat)
       return
     }
 
@@ -161,7 +185,13 @@ export const useChatsStore = defineStore('chats', () => {
 
   function handleNewChat(chat: Chat) {
     if (!isVisibleToCurrentUser(chat)) return
-    if (!chats.value.find(c => c.id === chat.id)) chats.value.unshift(chat)
+    if (chats.value.find(c => c.id === chat.id)) return
+    // chat:new events fire for genuinely fresh chats (current activity) AND
+    // for off-page chats hydrated after a chat:updated arrives for one we
+    // don't have in the window. Both cases go through sorted insertion so
+    // a stale chat hydrated by auto-distribute lands at its real position,
+    // not on top of today's conversation.
+    insertChatSorted(chat)
   }
 
   function addMessage(msg: ChatMessage) {
