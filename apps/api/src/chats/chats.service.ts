@@ -386,37 +386,47 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    * Called when a user comes online and when a chat closes.
    */
   async distributeQueuedChats(): Promise<void> {
-    // Pool = every unowned, non-closed chat: fresh `new` arrivals AND
-    // `active` chats that ended up ownerless (admin transferred to no one,
-    // owner deleted, etc.).
+    // Pool = every unowned chat regardless of status:
+    //   - new/active → live work, assigned with cap respect
+    //   - closed    → historical chats that ended up ownerless (e.g. admin
+    //                 closed without claiming). Per spec they still need an
+    //                 owner for record-keeping but don't count toward the cap
+    //                 (they're done, not load).
     //
     // Priority order, in tiers:
-    //   1. Chats with unread client messages first — a hot conversation
-    //      shouldn't wait behind a long-silent one.
-    //   2. Within that, most-recent last_message_at first so the chat that
-    //      just woke up jumps the queue.
-    //   3. Tie-break by `createdAt` ASC so identical activity doesn't make
-    //      one chat starve.
+    //   1. Live (non-closed) chats first so the cap-respecting drain runs
+    //      before we start touching the archival ones.
+    //   2. Unread client messages — a hot conversation shouldn't wait.
+    //   3. Most recent last_message_at so the chat that just woke up jumps.
+    //   4. FIFO by createdAt so identical activity doesn't starve a chat.
     //
     // Note: Postgres requires `NULLS LAST` to come AFTER `DESC` in a sort
     // spec. Wrapping `sql\`… NULLS LAST\`` in Drizzle's `desc()` emits
     // `… NULLS LAST desc`, which is a syntax error and was silently killing
     // every drain attempt — build the fragments by hand instead.
     const queued = await this.db.query.chats.findMany({
-      where: (c, { ne, and, isNull }) => and(ne(c.status, 'closed'), isNull(c.assignedTo)),
+      where: (c, { isNull }) => isNull(c.assignedTo),
       orderBy: (c, { asc, sql }) => [
-        sql`(${c.unreadCount} > 0) desc`,                // unread bucket first
-        sql`${c.lastMessageAt} desc nulls last`,         // most recent next
+        sql`(${c.status} <> 'closed') desc`,             // live chats first
+        sql`(${c.unreadCount} > 0) desc`,                // unread bucket next
+        sql`${c.lastMessageAt} desc nulls last`,         // most recent
         asc(c.createdAt),                                // FIFO tie-breaker
       ],
-      limit: 50,
+      limit: 100,
     })
     if (queued.length === 0) return
 
-    console.log(`[api] distributeQueuedChats: ${queued.length} ownerless chat(s) in pool`)
+    const liveCount = queued.filter((c) => c.status !== 'closed').length
+    const closedCount = queued.length - liveCount
+    console.log(`[api] distributeQueuedChats: ${queued.length} ownerless (${liveCount} live, ${closedCount} closed)`)
+
     let drained = 0
     for (const chat of queued) {
-      const assignee = await this.pickAssignee()
+      // Closed chats don't take a cap slot — they're already done. Live
+      // chats do, so once everyone hits the cap the live drain stops; the
+      // closed drain keeps going since `ignoreCap=true` lifts the HAVING.
+      const ignoreCap = chat.status === 'closed'
+      const assignee = await this.pickAssignee(undefined, ignoreCap)
       if (!assignee) {
         console.log(`[api] distributeQueuedChats: stopped after ${drained} — no eligible user (${queued.length - drained} remain queued)`)
         return
@@ -434,7 +444,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         assignedUser,
       })
       drained++
-      console.log(`[api] drained queued chat ${chat.id} → ${assignee} (${drained}/${queued.length})`)
+      console.log(`[api] drained ${chat.status} chat ${chat.id} → ${assignee} (${drained}/${queued.length})`)
     }
   }
 
@@ -444,11 +454,15 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    * auto-assign is the oldest (NULLS FIRST), giving a fair circle around
    * the team. Role doesn't matter — admins are in the rotation too.
    *
-   * Returns null when everyone is offline or at the cap — the queue then
-   * waits for someone to close a chat, come online, or for the admin to
-   * raise the cap.
+   * `ignoreCap` skips the per-user cap — used when assigning ALREADY-CLOSED
+   * ownerless chats for record-keeping. A closed chat isn't live work, so
+   * it shouldn't block someone who's already at 10 active from receiving it.
+   *
+   * Returns null when everyone is offline (or, with `ignoreCap=false`, at
+   * the cap). The queue then waits for someone to close a chat, come
+   * online, or for the admin to raise the cap.
    */
-  async pickAssignee(excludeUserId?: string): Promise<string | null> {
+  async pickAssignee(excludeUserId?: string, ignoreCap = false): Promise<string | null> {
     const cap = await this.getMaxChatsPerUser()
     const result = await this.db.execute<{ id: string }>(sql`
       SELECT u.id
@@ -459,7 +473,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         AND u.deleted_at IS NULL
         ${excludeUserId ? sql`AND u.id <> ${excludeUserId}` : sql``}
       GROUP BY u.id, u.last_auto_assigned_at
-      HAVING COUNT(c.id) < ${cap}
+      ${ignoreCap ? sql`` : sql`HAVING COUNT(c.id) < ${cap}`}
       ORDER BY u.last_auto_assigned_at ASC NULLS FIRST, u.id ASC
       LIMIT 1
     `)
