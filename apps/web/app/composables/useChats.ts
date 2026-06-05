@@ -79,6 +79,61 @@ export function useChats() {
     return p.toString()
   }
 
+  /** Shared structural-filter check: status, owner, date range. Used by
+   *  both the partial and full predicates — those just differ in how
+   *  they treat missing fields and the search query. */
+  function passesStructural(c: Partial<Chat>): boolean {
+    if (filters.status && c.status !== undefined && c.status !== filters.status) return false
+
+    if (filters.assignedTo === 'unassigned') {
+      if (c.assignedTo !== undefined && c.assignedTo !== null) return false
+    } else if (filters.assignedTo) {
+      if (c.assignedTo !== undefined && c.assignedTo !== filters.assignedTo) return false
+    }
+
+    if ((filters.dateFrom || filters.dateTo) && (c.lastMessageAt || c.createdAt)) {
+      const ts = new Date(c.lastMessageAt ?? c.createdAt!).getTime()
+      if (filters.dateFrom && ts < new Date(filters.dateFrom).getTime()) return false
+      if (filters.dateTo && ts > new Date(filters.dateTo).getTime()) return false
+    }
+
+    return true
+  }
+
+  /** Cheap pre-fetch check on the partial WS payload. Returns false ONLY
+   *  when a field IS present in the payload and contradicts the filter
+   *  (e.g. assignedTo='ali' while filter='admin'). Lets us skip the
+   *  `/chats/:id` GET during the auto-distribute burst that can fire
+   *  100 chat:updated events back-to-back. */
+  function partialMatchesFilter(c: Partial<Chat>): boolean {
+    return passesStructural(c)
+  }
+
+  /** Full predicate for ADDING a chat to the visible list. Includes the
+   *  search-query approximation (name/username only — server also matches
+   *  message text, but we can't verify that client-side, so we'd rather
+   *  miss-add than wrong-add. Genuine matches will appear on the next
+   *  refetch, which loadChats already triggers when q changes). */
+  function chatPassesFilterForAdd(c: Chat): boolean {
+    if (!passesStructural(c)) return false
+    const q = filters.q.trim().toLowerCase()
+    if (q) {
+      const haystack = [c.client?.firstName, c.client?.lastName, c.client?.username]
+        .filter(Boolean).map(s => s!.toLowerCase())
+      if (!haystack.some(h => h.includes(q))) return false
+    }
+    return true
+  }
+
+  /** Full predicate for KEEPING a known chat in the list after an update.
+   *  Skips the q check on purpose — the chat is already in the list
+   *  because the server vetted it, and we don't want a WS update with
+   *  partial data (no message bodies) to remove it just because we can't
+   *  re-verify the search match. */
+  function chatPassesFilterForKeep(c: Chat): boolean {
+    return passesStructural(c)
+  }
+
   async function loadChats() {
     loading.value = true
     try {
@@ -273,22 +328,44 @@ export function useChats() {
 
     const onChatUpdated = async (data: any) => {
       console.log('[ws] ← chat:updated', { id: data.id, fields: Object.keys(data) })
-      // Chat not in the loaded window: it was just auto-assigned to us, or it
-      // moved up from a later page on new activity. Fetch that one chat and let
-      // the store place it on top (don't reload the whole paginated list — that
-      // would yank the user back to page 1 on every off-page update).
       const known = store.chats.some(c => c.id === data.id)
+
+      // Apply the patch up-front no matter what — handleChatUpdated knows
+      // how to refresh `activeChat` even when the chat isn't in the list
+      // (user opened it via search). Without this the open chat's header
+      // and badges go stale after WS updates.
+      store.handleChatUpdated(data)
+
       if (!known) {
+        // Chat wasn't in the loaded window. May be a new auto-assign, a
+        // bumped-up off-page chat, or a tangential update (pin/online).
+        // Cheap partial-data filter check first — when the WS payload
+        // already contradicts the active filter (e.g. assignedTo='ali'
+        // while we're viewing 'admin'), skip the GET entirely. This is
+        // what was flooding the list during auto-distribute bursts.
+        if (!partialMatchesFilter(data)) return
         try {
           const chat = await api<Chat>(`/chats/${data.id}`)
+          // Server fields might disagree with the partial — recheck on full data.
+          if (!chatPassesFilterForAdd(chat)) return
           store.handleNewChat(chat)
         } catch { /* ignore — surfaces on next reload/poll */ }
         return
       }
-      store.handleChatUpdated(data)
+
+      // Known chat — the patch was applied above. Drop from the list if
+      // the post-merge projection no longer matches the structural filter
+      // (e.g. status flipped active → closed while filter='active').
+      const updated = store.chats.find(c => c.id === data.id)
+      if (updated && !chatPassesFilterForKeep(updated)) {
+        store.dropChat(data.id)
+      }
     }
     const onNewChat = (chat: Chat) => {
       console.log('[ws] ← chat:new', { id: chat.id })
+      // A genuinely new chat might still not match the active filter —
+      // e.g. it's 'new' status while we're viewing 'closed'. Skip cleanly.
+      if (!chatPassesFilterForAdd(chat)) return
       store.handleNewChat(chat)
     }
     const onMessageEdited = (payload: any) => store.handleMessageEdited(payload)

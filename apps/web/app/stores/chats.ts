@@ -121,6 +121,17 @@ export const useChatsStore = defineStore('chats', () => {
     chats.value = [...list.slice(0, lo), chat, ...list.slice(lo)]
   }
 
+  /** Remove a chat from the list. Used when a WS update flips a field that
+   *  pushes the chat out of the active filter (e.g. status went closed
+   *  while filter='active'). Deliberately does NOT touch `activeChat` —
+   *  if the user is viewing the chat, they should keep seeing it with
+   *  fresh data; only the side-list entry disappears. The role-loss case
+   *  (manager no longer owns it) still clears activeChat through the
+   *  isVisibleToCurrentUser branch in handleChatUpdated. */
+  function dropChat(id: string) {
+    chats.value = chats.value.filter(c => c.id !== id)
+  }
+
   function setActiveChat(chat: Chat) {
     activeChat.value = chat
     messages.value = chat.messages ?? []
@@ -149,38 +160,46 @@ export const useChatsStore = defineStore('chats', () => {
     const projectedAssignedTo = data.assignedTo !== undefined ? data.assignedTo : existing?.assignedTo
     const projectedChat = { ...(existing ?? {}), ...data, assignedTo: projectedAssignedTo } as Chat
     const visible = isVisibleToCurrentUser(projectedChat)
-
-    // For managers: if the chat's ownership flipped away from us, drop it.
-    if (existing && !visible) {
-      chats.value = chats.value.filter(c => c.id !== data.id)
-      if (activeChat.value?.id === data.id) activeChat.value = null
-      return
-    }
-
-    // If we don't have the chat yet but it's now visible, add it (handles
-    // auto-distribute that targets this manager — server emits chat:updated,
-    // not chat:new, so we'd otherwise miss the chat entirely). Insert at the
-    // sorted position (NOT the top) — auto-distribute can pull in chats that
-    // are days old, which would otherwise jump above today's activity.
-    if (!existing && visible) {
-      insertChatSorted(projectedChat)
-      return
-    }
-
-    if (!existing) return  // not visible and not present — ignore
-
-    // Existing visible chat — merge fields and replace in array for reactivity.
     const isActive = activeChat.value?.id === data.id
+
+    // Build the merge once — used for the in-list update AND the activeChat
+    // update. unreadCount auto-clears when the user is on the chat already.
     const overrides = isActive && data.unreadCount !== undefined ? { unreadCount: 0 } : {}
     const merged: Partial<Chat> = { ...data, ...overrides }
     // Client patches come through partial — the API only sends what changed
     // (e.g. just `onlineStatus`). Deep-merge so we don't blow away the
     // existing first/last name when the patch only carries presence fields.
-    if (data.client && existing.client) {
-      merged.client = { ...existing.client, ...data.client } as ChatClient
+    const clientBase = existing?.client ?? activeChat.value?.client
+    if (data.client && clientBase) {
+      merged.client = { ...clientBase, ...data.client } as ChatClient
     }
+
+    // For managers: if the chat's ownership flipped away from us, drop it
+    // from the list AND close the open view — they shouldn't keep working
+    // on a chat that's no longer theirs.
+    if (existing && !visible) {
+      chats.value = chats.value.filter(c => c.id !== data.id)
+      if (isActive) activeChat.value = null
+      return
+    }
+
+    // Always refresh activeChat — the user might be viewing a chat that
+    // isn't in the filtered list (opened via search, deep link, etc.).
+    // Without this the header status badge, owner badge, and client
+    // metadata go stale even though we just got authoritative data.
+    if (isActive) {
+      activeChat.value = { ...activeChat.value, ...merged } as Chat
+    }
+
+    // No list entry to mutate. Auto-distribute / off-page-activity cases
+    // need a full `/chats/:id` fetch to land in the list correctly — the
+    // composable owns that path (partialMatchesFilter → GET → handleNewChat).
+    // Inserting `projectedChat` here would put a half-populated row into
+    // the side list (missing client / lastMessage) which renders blank.
+    if (!existing) return
+
+    // Existing visible chat — merge fields and replace in array for reactivity.
     chats.value = chats.value.map(c => c.id === data.id ? ({ ...c, ...merged } as Chat) : c)
-    if (isActive) activeChat.value = { ...activeChat.value, ...merged } as Chat
   }
 
   function handleNewChat(chat: Chat) {
@@ -327,5 +346,6 @@ export const useChatsStore = defineStore('chats', () => {
     handleMessageEdited, handleMessagesDeleted, handleMessageStatus,
     handleOutboxRead, handleChatAction, actionFor,
     addMessage, prependMessages, mergeMessages,
+    dropChat,
   }
 })
