@@ -2,6 +2,7 @@
 import type { Chat } from '~/stores/chats'
 import AddContactDialog, { type AddContactPayload } from '~/components/chat/dialogs/AddContactDialog.vue'
 import ClientMediaTab from '~/components/chat/ClientMediaTab.vue'
+import ClientFilesTab from '~/components/chat/ClientFilesTab.vue'
 import { avatarColor, initials } from '~/utils/format'
 
 const props = defineProps<{
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 
 // "Инфо" by default; resets to it each time the chat changes so navigating to
 // another client doesn't strand the user on a "Медиа" tab that's still loading.
-type Tab = 'info' | 'media'
+type Tab = 'info' | 'media' | 'files'
 const tab = ref<Tab>('info')
 watch(() => props.chat.id, () => { tab.value = 'info' })
 
@@ -191,11 +192,24 @@ function formatDateTime(iso: string | null | undefined) {
         :class="{ 'tab-btn-active': tab === 'media' }"
         @click="tab = 'media'"
       >Медиа</button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ 'tab-btn-active': tab === 'files' }"
+        @click="tab = 'files'"
+      >Файлы</button>
     </div>
 
     <!-- Media tab: photos & videos from every chat with this client -->
     <ClientMediaTab
       v-if="tab === 'media'"
+      :chat-id="chat.id"
+      @open="(p) => emit('open-message', p)"
+    />
+
+    <!-- Files tab: documents from every chat with this client -->
+    <ClientFilesTab
+      v-else-if="tab === 'files'"
       :chat-id="chat.id"
       @open="(p) => emit('open-message', p)"
     />

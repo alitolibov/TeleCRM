@@ -952,6 +952,40 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Document attachments from every chat this client has ever had with us.
+   * Used by the client-card "Файлы" tab; same shape as getClientMedia so the
+   * sidebar can jump straight to the original chat/message.
+   */
+  async getClientFiles(chatId: string, limit = 50, offset = 0) {
+    const chat = await this.db.query.chats.findFirst({
+      where: (c, { eq }) => eq(c.id, chatId),
+      columns: { clientId: true },
+    })
+    if (!chat) throw new NotFoundException('Chat not found')
+
+    const rows = await this.db
+      .select({
+        id: schema.messages.id,
+        chatId: schema.messages.chatId,
+        content: schema.messages.content,
+        contentType: schema.messages.contentType,
+        senderType: schema.messages.senderType,
+        createdAt: schema.messages.createdAt,
+      })
+      .from(schema.messages)
+      .innerJoin(schema.chats, eq(schema.chats.id, schema.messages.chatId))
+      .where(and(
+        eq(schema.chats.clientId, chat.clientId),
+        eq(schema.messages.isDeleted, false),
+        eq(schema.messages.contentType, 'document'),
+      ))
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(Math.min(limit, 200))
+      .offset(Math.max(offset, 0))
+    return rows
+  }
+
+  /**
    * Loads N messages around a given message id (N/2 before, N/2 after + the
    * message itself). Drives the "jump to message" flow when the target isn't
    * in the loaded window yet. Returned oldest→newest so the caller can splice

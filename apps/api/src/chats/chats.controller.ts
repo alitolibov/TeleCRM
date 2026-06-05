@@ -74,6 +74,20 @@ export class ChatsController {
     )
   }
 
+  /** Document attachments from every chat this client has ever had with us. */
+  @Get(':id/files')
+  getClientFiles(
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.chatsService.getClientFiles(
+      id,
+      limit ? Number(limit) : 50,
+      offset ? Number(offset) : 0,
+    )
+  }
+
   /** N messages around a given message (for "jump-to-message" deep links). */
   @Get(':id/messages/around/:messageId')
   getMessagesAround(
