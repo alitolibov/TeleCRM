@@ -259,12 +259,11 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
 
     // Coming online → drain the unassigned `new`-chat queue. Spec: "Как только
     // сотрудник выходит Online — система предлагает ему взять чат из очереди".
-    // We auto-distribute here instead of just notifying — simpler UX, matches
-    // the auto-distribution policy used for fresh incoming messages.
+    // Use the coalesced variant so N near-simultaneous logins collapse into
+    // one distribute pass that sees all N users — otherwise the first one in
+    // grabs the entire queue before the others register as online.
     if (status === 'online' && before.status !== 'online') {
-      this.chatsService?.distributeQueuedChats().catch((e) =>
-        console.error('[users] distributeQueuedChats failed:', e),
-      )
+      this.chatsService?.distributeQueuedChatsCoalesced()
     }
 
     return payload

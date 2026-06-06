@@ -79,6 +79,24 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    *  chats close, the existing queue still gets picked up within 30 s. */
   private distributeSweepTimer: ReturnType<typeof setInterval> | null = null
 
+  /** Mutex around distributeQueuedChats. Concurrent triggers (two users
+   *  coming online at once, close-during-sweep, etc.) used to race over
+   *  the same queued chats — one process could read a snapshot, start
+   *  assigning, and the other process saw the same snapshot before any
+   *  of the first one's assignments landed. The `pending` flag means a
+   *  second call during a run isn't lost: the runner does another pass
+   *  after this one finishes, picking up whatever the second caller
+   *  was triggered by. */
+  private distributeRunning = false
+  private distributePending = false
+
+  /** Debounce timer for distribute calls that expect company. Online-
+   *  toggles from N users in the same heartbeat coalesce into a single
+   *  distribute pass at 500 ms — otherwise the first user's distribute
+   *  would finish and drain everything before user #2's online status
+   *  had even committed, sending all queued chats to user #1 alone. */
+  private distributeDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
   async onModuleInit() {
     const url = new URL(this.configService.get('REDIS_URL', 'redis://localhost:6379'))
     const connection = { host: url.hostname, port: Number(url.port) || 6379 }
@@ -88,10 +106,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     this.clientRefreshEvents = new QueueEvents(REDIS_QUEUES.tgClientRefresh, { connection })
     this.chatSearchEvents = new QueueEvents(REDIS_QUEUES.tgChatSearch, { connection })
 
+    // Sweep also goes through the coalesced path — otherwise a sweep
+    // firing inside the 500 ms online-debounce window would beat user #2
+    // to the queue and drain everything to user #1 alone. 500 ms extra
+    // latency on the safety-net path is fine.
     this.distributeSweepTimer = setInterval(() => {
-      this.distributeQueuedChats().catch((e) =>
-        console.error('[api] periodic distribute sweep failed:', e?.message),
-      )
+      this.distributeQueuedChatsCoalesced()
     }, 30_000)
   }
 
@@ -102,6 +122,29 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     await this.clientRefreshEvents?.close().catch(() => {})
     await this.chatSearchEvents?.close().catch(() => {})
     if (this.distributeSweepTimer) clearInterval(this.distributeSweepTimer)
+    if (this.distributeDebounceTimer) clearTimeout(this.distributeDebounceTimer)
+  }
+
+  /**
+   * Coalesced version of `distributeQueuedChats` for callers that expect
+   * concurrent triggers (the only one right now is "user came online" —
+   * if employees join within a few hundred ms of each other we want a
+   * single pass that sees all of them, not one pass per user where the
+   * first one grabs the whole queue before the others register).
+   *
+   * Repeated calls within the debounce window collapse into one run at
+   * the end of the window. Other triggers (close, transfer, settings,
+   * periodic sweep) call distributeQueuedChats directly — the mutex on
+   * that one handles their overlap correctly.
+   */
+  distributeQueuedChatsCoalesced(): void {
+    if (this.distributeDebounceTimer) clearTimeout(this.distributeDebounceTimer)
+    this.distributeDebounceTimer = setTimeout(() => {
+      this.distributeDebounceTimer = null
+      this.distributeQueuedChats().catch((e) =>
+        console.error('[api] coalesced distribute failed:', e?.message),
+      )
+    }, 500)
   }
 
   async processIncomingEvent(event: TgMessageEvent) {
@@ -386,6 +429,29 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
    * Called when a user comes online and when a chat closes.
    */
   async distributeQueuedChats(): Promise<void> {
+    // Concurrent triggers (two users online at once, close-during-sweep,
+    // settings-during-online, …) used to race over the same queued chats.
+    // Single-flight: if a run is in progress, mark "do another pass when
+    // you finish" and bail. The runner loops until no one re-triggered
+    // during the previous pass, so nothing gets lost.
+    if (this.distributeRunning) {
+      this.distributePending = true
+      return
+    }
+    this.distributeRunning = true
+    try {
+      do {
+        this.distributePending = false
+        await this.runDistributePass()
+      } while (this.distributePending)
+    } finally {
+      this.distributeRunning = false
+    }
+  }
+
+  /** One pass through the queue. Owned by `distributeQueuedChats`, which
+   *  handles the single-flight wrapping. */
+  private async runDistributePass(): Promise<void> {
     // Pool = every unowned chat regardless of status:
     //   - new/active → live work, assigned with cap respect
     //   - closed    → historical chats that ended up ownerless (e.g. admin
