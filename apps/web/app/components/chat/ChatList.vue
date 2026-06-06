@@ -237,9 +237,12 @@ function resetFilters() {
 
     <!-- List -->
     <div class="flex-1 overflow-y-auto px-1.5 py-2" @scroll="onListScroll">
-      <!-- Personal "Saved Messages" — always pinned at top, ignores filters. -->
+      <!-- Personal "Saved Messages" — always pinned at top, ignores filters.
+           Exception: hide while a search query is typed so name-/text-matches
+           are the only results. Owner / status / date filters are about the
+           CRM workspace and don't apply to the user's private notes. -->
       <button
-        v-if="!hasActiveFilter"
+        v-if="!filters.q.trim()"
         class="chat-row chat-row-favorites"
         :class="{ 'chat-row-active': activeId === FAVORITES_CHAT_ID }"
         @click="$emit('select', FAVORITES_CHAT_ID)"
