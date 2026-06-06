@@ -196,17 +196,53 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         .returning()
       chat = newChat
     } else if (chat.status === 'closed') {
-      // Reopen — manager already worked this lead, treat as 'active' (not 'new')
+      // Reopen — manager already worked this lead, treat as 'active' (not 'new').
+      //
+      // EXCEPTION: if a client message reopens the chat AND the previous owner
+      // is offline (or soft-deleted), drop the assignment so the chat lands
+      // back in the queue and auto-distribute picks a fresh employee. Without
+      // this the chat sits invisible to an absent owner while the client
+      // waits — exactly the "vanished into someone's offline list" scenario.
+      // Manager echoes (event.isOutgoing) skip the check: the owner is
+      // demonstrably responding right now, no reason to take it away.
       const prev = chat.status
+      const prevAssignedTo = chat.assignedTo
+
+      let nextAssignedTo: string | null = prevAssignedTo
+      if (!event.isOutgoing && prevAssignedTo) {
+        const ownerOnline = await this.db.query.users.findFirst({
+          where: (u, { and, eq, isNull }) => and(
+            eq(u.id, prevAssignedTo),
+            isNull(u.deletedAt),
+            eq(u.status, 'online'),
+          ),
+          columns: { id: true },
+        })
+        if (!ownerOnline) nextAssignedTo = null
+      }
+      // Unowned → status='new' so the queue/distribute step downstream treats
+      // it as a fresh queue item; owned → 'active' (continuing work).
+      const nextStatus: schema.ChatStatus = nextAssignedTo ? 'active' : 'new'
+
       const [reopened] = await this.db
         .update(schema.chats)
-        .set({ status: 'active', closedAt: null, updatedAt: new Date() })
+        .set({
+          status: nextStatus,
+          closedAt: null,
+          assignedTo: nextAssignedTo,
+          updatedAt: new Date(),
+        })
         .where(eq(schema.chats.id, chat.id))
         .returning()
       chat = reopened
-      await this.logStatusChange(chat.id, null, prev, 'active', {
+      const releasedFromOfflineOwner = prevAssignedTo !== null && nextAssignedTo === null
+      await this.logStatusChange(chat.id, null, prev, nextStatus, {
         trigger: event.isOutgoing ? 'manager_message' : 'client_message',
+        ...(releasedFromOfflineOwner ? { releasedFromOfflineOwner: true, previousOwner: prevAssignedTo } : {}),
       })
+      if (releasedFromOfflineOwner) {
+        console.log(`[api] reopen released chat ${chat.id} from offline owner ${prevAssignedTo} → queue`)
+      }
     } else if (chat.status === 'new' && event.isOutgoing) {
       const prev = chat.status
       const [activated] = await this.db
