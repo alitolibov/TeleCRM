@@ -221,12 +221,29 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
     return { id, deleted: true, releasedChats: releasedCount }
   }
 
-  /** Heartbeat — bumps lastSeenAt without touching status. */
+  /**
+   * Heartbeat — primary purpose is to refresh `lastSeenAt` so the stale-
+   * sweep doesn't kick us offline. But if the sweep ALREADY flipped us to
+   * offline during a network blip (auto_offline=true), the very fact that
+   * a heartbeat reached the server proves the tab is alive — flip back to
+   * online. Without this the user is stranded: their tab is open and
+   * heartbeating, but the DB says offline so chats don't come and admin
+   * sees them as offline.
+   */
   async heartbeat(userId: string) {
-    await this.db
+    const [updated] = await this.db
       .update(schema.users)
       .set({ lastSeenAt: new Date() })
       .where(eq(schema.users.id, userId))
+      .returning({ status: schema.users.status, autoOffline: schema.users.autoOffline })
+
+    if (updated?.status === 'offline' && updated.autoOffline) {
+      // Reuse setStatus so the WS broadcast, queue drain and action log
+      // all fire as if the user had toggled online themselves.
+      await this.setStatus(userId, 'online').catch((e) =>
+        console.error('[users] heartbeat-revive failed:', e),
+      )
+    }
   }
 
   /** Manual status flip (the toggle in the sidebar). */
@@ -240,7 +257,10 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
     const now = new Date()
     const [updated] = await this.db
       .update(schema.users)
-      .set({ status, lastSeenAt: now, updatedAt: now })
+      // Whatever direction the manual toggle goes, autoOffline=false: this
+      // was a deliberate user action, not the sweep. So a subsequent
+      // heartbeat won't accidentally flip a manually-offline user back on.
+      .set({ status, lastSeenAt: now, updatedAt: now, autoOffline: false })
       .where(eq(schema.users.id, userId))
       .returning({ id: schema.users.id, status: schema.users.status, lastSeenAt: schema.users.lastSeenAt })
 
@@ -278,7 +298,11 @@ export class UsersService implements OnModuleInit, OnModuleDestroy {
     const cutoff = new Date(Date.now() - STALE_THRESHOLD_MS)
     const stale = await this.db
       .update(schema.users)
-      .set({ status: 'offline', updatedAt: new Date() })
+      // autoOffline=true marks the flip as "the sweep did this, not the
+      // user". A later heartbeat from the same user will undo it via the
+      // revive path in `heartbeat()` — so a transient network blip stops
+      // stranding the user as offline once their tab is back.
+      .set({ status: 'offline', autoOffline: true, updatedAt: new Date() })
       .where(and(
         eq(schema.users.status, 'online'),
         sql`(${schema.users.lastSeenAt} IS NULL OR ${schema.users.lastSeenAt} < ${cutoff})`,
