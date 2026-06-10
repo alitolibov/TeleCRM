@@ -479,6 +479,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       do {
         this.distributePending = false
         await this.runDistributePass()
+        // After every pass also rebalance — a newly-online colleague should
+        // get some of the heavy user's untouched `new` chats, not just wait
+        // for fresh ones to arrive.
+        await this.rebalanceWorkload().catch((e) =>
+          console.error('[api] rebalance failed:', e?.message),
+        )
       } while (this.distributePending)
     } finally {
       this.distributeRunning = false
@@ -548,6 +554,90 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       drained++
       console.log(`[api] drained ${chat.status} chat ${chat.id} → ${assignee} (${drained}/${queued.length})`)
     }
+  }
+
+  /**
+   * Workload rebalancing: when one online user is sitting on far more open
+   * chats than a colleague — typical case is the lunch-break scenario where
+   * person A logs back in first, grabs the whole queue, and person B comes
+   * back to nothing — move the heaviest user's untouched chats onto the
+   * lightest colleague until the gap closes.
+   *
+   * Rules:
+   *   - Only `status='new'` chats move. An `active` chat means the manager
+   *     is already mid-conversation; yanking those out from under them is
+   *     disruptive both for the manager (loses context) and the client
+   *     (gets a different person mid-thread).
+   *   - Only chats untouched for ≥5 min move, so a chat that was just
+   *     auto-assigned a moment ago doesn't immediately fly to a colleague
+   *     who happened to log in 10 seconds later.
+   *   - Stops when the gap between heaviest and lightest is ≤1 — within
+   *     rounding noise the distribution is fair.
+   *
+   * Heaviest/lightest are recomputed each iteration so the moves naturally
+   * rotate among multiple colleagues ("по очереди" in the spec).
+   */
+  async rebalanceWorkload(): Promise<void> {
+    const rows = await this.db.execute<{ id: string; count: string }>(sql`
+      SELECT u.id, COUNT(c.id)::text AS count
+      FROM ${schema.users} u
+      LEFT JOIN ${schema.chats} c
+        ON c.assigned_to = u.id AND c.status IN ('new', 'active')
+      WHERE u.status = 'online' AND u.deleted_at IS NULL
+      GROUP BY u.id
+    `)
+    const users = rows.rows.map((r) => ({ id: r.id, count: Number(r.count) }))
+    if (users.length < 2) return    // no one to rebalance with
+
+    let moved = 0
+    let safety = 0
+    while (safety++ < 100) {
+      const heaviest = users.reduce((m, u) => (u.count > m.count ? u : m), users[0]!)
+      const lightest = users.reduce((m, u) => (u.count < m.count ? u : m), users[0]!)
+      if (heaviest.count - lightest.count <= 1) break    // fair enough
+
+      // Take the heaviest's oldest `new` chat that has been sitting at least
+      // 5 minutes. Excludes just-arrived ones so a brand-new auto-assign
+      // doesn't immediately re-route on a colleague's login.
+      const candidate = await this.db.query.chats.findFirst({
+        where: (c, { and, eq, sql }) => and(
+          eq(c.assignedTo, heaviest.id),
+          eq(c.status, 'new'),
+          sql`${c.updatedAt} < now() - interval '5 minutes'`,
+        ),
+        orderBy: (c, { asc }) => asc(c.createdAt),
+      })
+      if (!candidate) break    // nothing safe to move on this user — stop
+
+      await this.db.update(schema.chats)
+        .set({ assignedTo: lightest.id, updatedAt: new Date() })
+        .where(eq(schema.chats.id, candidate.id))
+
+      await this.db.insert(schema.actionLogs).values({
+        action: 'chat_transferred',
+        actorId: null,
+        chatId: candidate.id,
+        metadata: { from: heaviest.id, to: lightest.id, reason: 'rebalance' },
+      })
+
+      const assignedUser = await this.db.query.users.findFirst({
+        where: (u, { eq }) => eq(u.id, lightest.id),
+        columns: { id: true, firstName: true, username: true },
+      })
+      this.gateway?.emitChatUpdated({
+        id: candidate.id,
+        assignedTo: lightest.id,
+        assignedUser,
+      })
+
+      heaviest.count--
+      lightest.count++
+      moved++
+      console.log(
+        `[api] rebalance: chat ${candidate.id} ${heaviest.id}(${heaviest.count + 1}→${heaviest.count}) → ${lightest.id}(${lightest.count - 1}→${lightest.count})`,
+      )
+    }
+    if (moved > 0) console.log(`[api] rebalance: moved ${moved} chat(s) to even the workload`)
   }
 
   /**
