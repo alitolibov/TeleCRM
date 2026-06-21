@@ -173,11 +173,23 @@ export function useChats() {
   loadChats()
 
   async function openChat(id: string) {
-    const chat = await api<Chat>(`/chats/${id}`)
-    store.setActiveChat(chat)
+    // Optimistic open: if we already have the chat in the list (typical:
+    // user clicked it there), paint it instantly from cached data while
+    // the full payload (messages, pinned, hasCrmContact, …) loads in the
+    // background. Without this every click waited a full Hetzner round-
+    // trip (~200 ms+) before anything visibly happened.
+    const cached = store.chats.find((c) => c.id === id)
+    if (cached) store.setActiveChat({ ...cached, messages: [] } as Chat)
     emit('join:chat', id)
-    await api(`/chats/${id}/read`, { method: 'PATCH' }).catch(() => {})
-    store.markActiveChatRead()
+    // Mark-read fires in parallel — UI shouldn't wait for it.
+    api(`/chats/${id}/read`, { method: 'PATCH' }).then(
+      () => { if (store.activeChat?.id === id) store.markActiveChatRead() },
+      () => { /* ignore */ },
+    )
+    const chat = await api<Chat>(`/chats/${id}`)
+    // Guard against the user clicking another chat while this one was in
+    // flight — only apply if the just-opened chat is still the active one.
+    if (store.activeChat?.id === id) store.setActiveChat(chat)
   }
 
   /**

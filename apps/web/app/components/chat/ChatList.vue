@@ -272,6 +272,17 @@ function resetFilters() {
       <template v-else>
         <button
           v-for="chat in chats" :key="chat.id"
+          v-memo="[
+            chat.id === activeId,
+            chat.lastMessage?.id,
+            chat.lastMessageAt,
+            chat.unreadCount,
+            chat.status,
+            chat.assignedTo,
+            chat.client.firstName,
+            chat.client.lastName,
+            chat.client.onlineStatus,
+          ]"
           class="chat-row"
           :class="{ 'chat-row-active': activeId === chat.id }"
           @click="$emit('select', chat.id)"
