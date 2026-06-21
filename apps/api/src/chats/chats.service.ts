@@ -209,6 +209,7 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       const prevAssignedTo = chat.assignedTo
 
       let nextAssignedTo: string | null = prevAssignedTo
+      let reopenReleaseReason: 'owner_offline' | 'owner_at_cap' | null = null
       if (!event.isOutgoing && prevAssignedTo) {
         const ownerOnline = await this.db.query.users.findFirst({
           where: (u, { and, eq, isNull }) => and(
@@ -218,7 +219,16 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
           ),
           columns: { id: true },
         })
-        if (!ownerOnline) nextAssignedTo = null
+        if (!ownerOnline) {
+          nextAssignedTo = null
+          reopenReleaseReason = 'owner_offline'
+        } else if (await this.isAtCap(prevAssignedTo)) {
+          // Owner is online but already at the cap — piling a reopened chat
+          // on top would silently break the limit. Drop the assignment and
+          // let auto-distribute hand the chat to a colleague with capacity.
+          nextAssignedTo = null
+          reopenReleaseReason = 'owner_at_cap'
+        }
       }
       // Unowned → status='new' so the queue/distribute step downstream treats
       // it as a fresh queue item; owned → 'active' (continuing work).
@@ -235,13 +245,12 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         .where(eq(schema.chats.id, chat.id))
         .returning()
       chat = reopened
-      const releasedFromOfflineOwner = prevAssignedTo !== null && nextAssignedTo === null
       await this.logStatusChange(chat.id, null, prev, nextStatus, {
         trigger: event.isOutgoing ? 'manager_message' : 'client_message',
-        ...(releasedFromOfflineOwner ? { releasedFromOfflineOwner: true, previousOwner: prevAssignedTo } : {}),
+        ...(reopenReleaseReason ? { releasedFrom: reopenReleaseReason, previousOwner: prevAssignedTo } : {}),
       })
-      if (releasedFromOfflineOwner) {
-        console.log(`[api] reopen released chat ${chat.id} from offline owner ${prevAssignedTo} → queue`)
+      if (reopenReleaseReason) {
+        console.log(`[api] reopen released chat ${chat.id} (${reopenReleaseReason}: prev owner ${prevAssignedTo}) → queue`)
       }
     } else if (chat.status === 'new' && event.isOutgoing) {
       const prev = chat.status
