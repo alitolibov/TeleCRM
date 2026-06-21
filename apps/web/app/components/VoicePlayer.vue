@@ -19,6 +19,7 @@
       ref="audio"
       :src="src"
       preload="metadata"
+      crossorigin="anonymous"
       @loadedmetadata="onLoaded"
       @timeupdate="onTimeUpdate"
       @ended="onEnded"
