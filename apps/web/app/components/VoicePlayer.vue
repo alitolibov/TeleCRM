@@ -84,6 +84,18 @@ function toggle() {
           src: el.currentSrc, currentTime: el.currentTime, duration: el.duration,
           paused: el.paused, muted: el.muted, volume: el.volume,
         })
+        // Sanity-check after 1s: did currentTime actually move? If it
+        // didn't, the element thinks it's playing but the audio output
+        // never started (or someone killed it instantly).
+        setTimeout(() => {
+          console.log('[voice] +1s check', {
+            currentTime: el.currentTime, paused: el.paused,
+            muted: el.muted, volume: el.volume,
+            readyState: el.readyState, networkState: el.networkState,
+            sameRef: audio.value === el,
+            attachedToDOM: el.isConnected,
+          })
+        }, 1000)
       },
       (err) => console.error('[voice] play rejected:', err?.name, err?.message, 'src:', el.currentSrc),
     )
