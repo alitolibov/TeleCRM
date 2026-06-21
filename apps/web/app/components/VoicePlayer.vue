@@ -22,6 +22,8 @@
       @loadedmetadata="onLoaded"
       @timeupdate="onTimeUpdate"
       @ended="onEnded"
+      @error="onError"
+      @stalled="onStalled"
     />
   </div>
 </template>
@@ -70,8 +72,24 @@ function toggle() {
   } else {
     setActive(stop)   // stops whichever voice was playing before
     el.playbackRate = speed.value
-    void el.play().then(() => { playing.value = true }).catch(() => {})
+    // Surface play failures instead of swallowing them — the silent
+    // catch was hiding codec errors, autoplay-policy blocks and load
+    // failures, which is exactly what we want to see when "no sound".
+    el.play().then(
+      () => { playing.value = true },
+      (err) => console.warn('[voice] play rejected:', err?.name, err?.message, 'src:', el.currentSrc),
+    )
   }
+}
+
+function onError(e: Event) {
+  const el = e.target as HTMLAudioElement
+  const err = el.error
+  console.warn('[voice] audio error',
+    { code: err?.code, message: err?.message, src: el.currentSrc })
+}
+function onStalled() {
+  console.warn('[voice] stalled — buffer underrun or network drop')
 }
 
 function onLoaded() {
