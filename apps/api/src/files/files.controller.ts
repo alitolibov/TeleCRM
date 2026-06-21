@@ -38,7 +38,11 @@ function mimeForContentType(t: string | undefined): string | null {
     case 'photo':     return 'image/jpeg'
     case 'video':     return 'video/mp4'
     case 'videoNote': return 'video/mp4'
-    case 'voice':     return 'audio/ogg'
+    // Telegram voice messages are always OGG Opus. Bare `audio/ogg` makes
+    // modern Edge / Safari / strict Chrome refuse to decode (or play
+    // silently) because OGG can also wrap Vorbis. The explicit codecs
+    // hint resolves the ambiguity and gets sound back.
+    case 'voice':     return 'audio/ogg; codecs=opus'
     case 'sticker':   return 'image/webp'
     default:          return null
   }
