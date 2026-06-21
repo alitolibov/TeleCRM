@@ -15,16 +15,10 @@
     <button class="voice-speed" type="button" title="Скорость воспроизведения" @click="cycleSpeed">
       {{ speedLabel }}
     </button>
-    <!-- DEBUG: native controls visible. Click the BROWSER's play button
-         (the round arrow in the dark bar below) to test if audio works
-         via the standard browser path. If sound plays from this, our
-         JS toggle handler is the problem. If not, page-level issue. -->
     <audio
       ref="audio"
       :src="src"
       preload="metadata"
-      controls
-      style="display: block; width: 100%; margin-top: 4px;"
       @loadedmetadata="onLoaded"
       @timeupdate="onTimeUpdate"
       @ended="onEnded"

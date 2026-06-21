@@ -1,50 +1,81 @@
 const STORAGE_KEY = 'telecrm:sound-enabled'
 
-// Module-level singletons so every caller shares one AudioContext + setting.
-let ctx: AudioContext | null = null
 const soundEnabled = ref(true)
 let hydrated = false
-let armed = false
+let chimeBlobUrl: string | null = null
 
-function getContext(): AudioContext | null {
+/**
+ * Build a tiny two-tone "ding" as raw PCM, wrap in a WAV container, hand
+ * back a blob URL. Done once, lazily — the resulting URL stays valid for
+ * the page lifetime.
+ *
+ * We deliberately AVOID `AudioContext` here. Some Chromium builds tie the
+ * page's audio session to a live AudioContext: once one exists, every
+ * other `<audio>` element on the page plays SILENTLY (currentTime
+ * advances, no error fires, no sound reaches the speakers). That bit our
+ * voice messages — file played fine in a fresh tab but went silent in
+ * the SPA the moment notifications armed the AudioContext. Synthesising
+ * the chime into a WAV blob and playing it through a regular `<audio>`
+ * element keeps the whole page off the Web Audio path entirely.
+ */
+function makeChimeBlobUrl(): string | null {
   if (!import.meta.client) return null
-  ctx ??= new (window.AudioContext || (window as any).webkitAudioContext)()
-  return ctx
+  if (chimeBlobUrl) return chimeBlobUrl
+
+  const sampleRate = 22050      // good enough for a short chime, half the bytes
+  const duration = 0.4
+  const sampleCount = Math.floor(sampleRate * duration)
+  const dataBytes = sampleCount * 2     // 16-bit mono
+  const buffer = new ArrayBuffer(44 + dataBytes)
+  const view = new DataView(buffer)
+
+  // RIFF header
+  let p = 0
+  const writeStr = (s: string) => { for (const c of s) view.setUint8(p++, c.charCodeAt(0)) }
+  writeStr('RIFF')
+  view.setUint32(p, 36 + dataBytes, true); p += 4
+  writeStr('WAVE')
+  writeStr('fmt ')
+  view.setUint32(p, 16, true); p += 4              // fmt chunk size
+  view.setUint16(p, 1, true);  p += 2              // PCM
+  view.setUint16(p, 1, true);  p += 2              // mono
+  view.setUint32(p, sampleRate, true); p += 4
+  view.setUint32(p, sampleRate * 2, true); p += 4  // byte rate
+  view.setUint16(p, 2, true);  p += 2              // block align
+  view.setUint16(p, 16, true); p += 2              // bits per sample
+  writeStr('data')
+  view.setUint32(p, dataBytes, true); p += 4
+
+  // Synth: A5 (880 Hz) then D6 (1175 Hz), short and quiet — Telegram-ish ping.
+  // Each note's amplitude envelope: sharp attack, exponential decay so it
+  // doesn't sound like a hard click.
+  const notes = [
+    { f: 880,  start: 0.00, decay: 22 },
+    { f: 1175, start: 0.11, decay: 22 },
+  ]
+  for (let i = 0; i < sampleCount; i++) {
+    const t = i / sampleRate
+    let sample = 0
+    for (const n of notes) {
+      if (t < n.start) continue
+      const dt = t - n.start
+      sample += Math.sin(2 * Math.PI * n.f * dt) * Math.exp(-dt * n.decay)
+    }
+    // Master gain — 0.22 keeps it noticeable but not jarring.
+    const s = Math.max(-1, Math.min(1, sample * 0.22))
+    view.setInt16(44 + i * 2, Math.round(s * 32767), true)
+  }
+
+  const blob = new Blob([buffer], { type: 'audio/wav' })
+  chimeBlobUrl = URL.createObjectURL(blob)
+  return chimeBlobUrl
 }
 
-/** Shared with VoicePlayer so HTMLAudioElement output is routed through
- *  the same AudioContext as the notification chime. Without this, some
- *  Chromium builds suppress the `<audio>` output entirely when an
- *  AudioContext exists in the page — element plays (currentTime advances)
- *  but no sound reaches the speakers. */
-export function getSharedAudioContext(): AudioContext | null {
-  return getContext()
-}
-
-/**
- * Browsers block audio until the user interacts with the page, so an
- * AudioContext created from a WebSocket handler starts suspended. We resume it
- * on the first real user gesture, after which programmatic chimes play.
- */
-function armUnlock() {
-  if (!import.meta.client || armed) return
-  armed = true
-  const unlock = () => { getContext()?.resume().catch(() => {}) }
-  window.addEventListener('pointerdown', unlock, { once: true })
-  window.addEventListener('keydown', unlock, { once: true })
-}
-
-/**
- * Plays a short notification chime via the Web Audio API — no asset file needed.
- * Synthesises a gentle two-note "ding" so we don't ship a binary sound file.
- * Respects a localStorage on/off preference (default on).
- */
 export function useNotificationSound() {
   if (import.meta.client && !hydrated) {
     hydrated = true
     soundEnabled.value = localStorage.getItem(STORAGE_KEY) !== '0'
   }
-  armUnlock()
 
   function setEnabled(v: boolean) {
     soundEnabled.value = v
@@ -53,35 +84,13 @@ export function useNotificationSound() {
 
   function play() {
     if (!import.meta.client || !soundEnabled.value) return
-    const audio = getContext()
-    if (!audio) return
-
-    // Schedule the two notes. `currentTime` is read AFTER resume completes,
-    // otherwise on a just-resumed context the start time lands in the past.
-    const fire = () => {
-      try {
-        const now = audio.currentTime
-        const notes = [{ f: 880, t: 0 }, { f: 1175, t: 0.11 }] // A5 → D6
-        for (const n of notes) {
-          const osc = audio.createOscillator()
-          const gain = audio.createGain()
-          osc.type = 'sine'
-          osc.frequency.value = n.f
-          gain.gain.setValueAtTime(0.0001, now + n.t)
-          gain.gain.exponentialRampToValueAtTime(0.18, now + n.t + 0.02)
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + n.t + 0.2)
-          osc.connect(gain)
-          gain.connect(audio.destination)
-          osc.start(now + n.t)
-          osc.stop(now + n.t + 0.22)
-        }
-      } catch { /* ignore */ }
-    }
-
-    // resume() resolves only when triggered within (or after) a user gesture;
-    // if it rejects (never unlocked), we simply stay silent.
-    if (audio.state === 'suspended') audio.resume().then(fire).catch(() => {})
-    else fire()
+    const url = makeChimeBlobUrl()
+    if (!url) return
+    const a = new Audio(url)
+    a.volume = 0.55
+    // play() may be rejected if no user gesture has unlocked autoplay yet —
+    // that's fine, the next click/keypress will let the chime through.
+    a.play().catch(() => {})
   }
 
   return { soundEnabled, setEnabled, play }
