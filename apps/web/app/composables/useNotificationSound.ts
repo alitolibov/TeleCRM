@@ -12,6 +12,15 @@ function getContext(): AudioContext | null {
   return ctx
 }
 
+/** Shared with VoicePlayer so HTMLAudioElement output is routed through
+ *  the same AudioContext as the notification chime. Without this, some
+ *  Chromium builds suppress the `<audio>` output entirely when an
+ *  AudioContext exists in the page — element plays (currentTime advances)
+ *  but no sound reaches the speakers. */
+export function getSharedAudioContext(): AudioContext | null {
+  return getContext()
+}
+
 /**
  * Browsers block audio until the user interacts with the page, so an
  * AudioContext created from a WebSocket handler starts suspended. We resume it

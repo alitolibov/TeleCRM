@@ -36,6 +36,8 @@ const props = defineProps<{
   time?: string
 }>()
 
+import { getSharedAudioContext } from '~/composables/useNotificationSound'
+
 const audio = ref<HTMLAudioElement>()
 const playing = ref(false)
 const currentTime = ref(0)
@@ -44,6 +46,32 @@ const audioDuration = ref(0)
 // Shared across the app: remembered speed + single-active-playback (like Telegram).
 const { speed, cycleSpeed, setActive, clearActive } = useVoiceAudio()
 const speedLabel = computed(() => (speed.value === 1.5 ? '1,5×' : `${speed.value}×`))
+
+// Chromium quirk: when an AudioContext exists in the page (we have one for
+// notification chimes), <audio> elements that haven't been wired into the
+// same context can play silently — currentTime advances, no error fires,
+// but the OS speakers stay quiet. Routing the element through the shared
+// context's destination forces both paths to share one audio session.
+// `createMediaElementSource` can only be called once per element, so we
+// keep the source on a per-element WeakMap (Vue may re-create the element).
+const wiredEls = new WeakSet<HTMLAudioElement>()
+function wireToAudioContext(el: HTMLAudioElement) {
+  if (wiredEls.has(el)) return
+  const ctx = getSharedAudioContext()
+  if (!ctx) return
+  try {
+    const src = ctx.createMediaElementSource(el)
+    src.connect(ctx.destination)
+    wiredEls.add(el)
+  } catch (e) {
+    // Already wired (can happen across HMR) — fine.
+    console.warn('[voice] wireToAudioContext failed:', (e as Error).message)
+  }
+}
+
+onMounted(() => {
+  if (audio.value) wireToAudioContext(audio.value)
+})
 
 // Stable identity so the shared store can stop exactly this player.
 function stop() {
@@ -77,6 +105,12 @@ function toggle() {
   } else {
     setActive(stop)
     el.playbackRate = speed.value
+    // Make sure the shared AudioContext is running before play — if it's
+    // suspended (no user gesture yet on the page), routing audio through
+    // its destination produces silence even when the element thinks it's
+    // playing. The click itself is a valid gesture so resume() succeeds.
+    const ctx = getSharedAudioContext()
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {})
     el.play().then(
       () => {
         playing.value = true
