@@ -64,20 +64,28 @@ const progress = computed(() => {
 
 function toggle() {
   const el = audio.value
+  console.log('[voice] toggle clicked', {
+    hasEl: !!el, playing: playing.value, src: el?.currentSrc, readyState: el?.readyState,
+    networkState: el?.networkState, error: el?.error?.code, duration: el?.duration,
+    muted: el?.muted, volume: el?.volume,
+  })
   if (!el) return
   if (playing.value) {
     el.pause()
     playing.value = false
     clearActive(stop)
   } else {
-    setActive(stop)   // stops whichever voice was playing before
+    setActive(stop)
     el.playbackRate = speed.value
-    // Surface play failures instead of swallowing them — the silent
-    // catch was hiding codec errors, autoplay-policy blocks and load
-    // failures, which is exactly what we want to see when "no sound".
     el.play().then(
-      () => { playing.value = true },
-      (err) => console.warn('[voice] play rejected:', err?.name, err?.message, 'src:', el.currentSrc),
+      () => {
+        playing.value = true
+        console.log('[voice] play() resolved — should be audible', {
+          src: el.currentSrc, currentTime: el.currentTime, duration: el.duration,
+          paused: el.paused, muted: el.muted, volume: el.volume,
+        })
+      },
+      (err) => console.error('[voice] play rejected:', err?.name, err?.message, 'src:', el.currentSrc),
     )
   }
 }
@@ -85,7 +93,7 @@ function toggle() {
 function onError(e: Event) {
   const el = e.target as HTMLAudioElement
   const err = el.error
-  console.warn('[voice] audio error',
+  console.error('[voice] audio error',
     { code: err?.code, message: err?.message, src: el.currentSrc })
 }
 function onStalled() {
