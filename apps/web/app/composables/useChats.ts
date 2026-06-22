@@ -48,6 +48,11 @@ export interface ClientInfo {
   timeline: TimelineItem[]
 }
 
+// Latest chat the user asked to open, shared across every useChats() caller.
+// openChat() applies the fetched payload only if this still matches — see the
+// note in openChat for why this can't key off store.activeChat.
+let lastRequestedChatId: string | null = null
+
 export function useChats() {
   const { api } = useApi()
   const store = useChatsStore()
@@ -173,6 +178,7 @@ export function useChats() {
   loadChats()
 
   async function openChat(id: string) {
+    lastRequestedChatId = id
     // Optimistic open: if we already have the chat in the list (typical:
     // user clicked it there), paint it instantly from cached data while
     // the full payload (messages, pinned, hasCrmContact, …) loads in the
@@ -187,9 +193,13 @@ export function useChats() {
       () => { /* ignore */ },
     )
     const chat = await api<Chat>(`/chats/${id}`)
-    // Guard against the user clicking another chat while this one was in
-    // flight — only apply if the just-opened chat is still the active one.
-    if (store.activeChat?.id === id) store.setActiveChat(chat)
+    // Apply unless the user has since requested a different chat. We key off
+    // lastRequestedChatId, NOT store.activeChat?.id: chats opened via deep-link
+    // from /results or /contacts aren't in the sidebar list, so the optimistic
+    // paint above never ran and activeChat is still null/previous — the old
+    // `activeChat?.id === id` check silently dropped their payload and the chat
+    // never opened.
+    if (lastRequestedChatId === id) store.setActiveChat(chat)
   }
 
   /**
