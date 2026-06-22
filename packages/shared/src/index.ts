@@ -25,6 +25,7 @@ export const REDIS_QUEUES = {
   tgUserStatus: 'tg-user-status',
   tgOutboxRead: 'tg-outbox-read',
   tgChatAction: 'tg-chat-action',
+  tgRefreshMessage: 'tg-refresh-message',
 } as const
 
 export type {

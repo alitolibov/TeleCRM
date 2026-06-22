@@ -3,7 +3,7 @@ import { config } from './config.js'
 import { createTdlibClient } from './tdlib.js'
 import { loginHandlers, closeReadline } from './auth.js'
 import { connectRedis, redis } from './redis.js'
-import { setupMessageHandler } from './messages.js'
+import { setupMessageHandler, syncChats } from './messages.js'
 import { setupSender } from './sender.js'
 import { setupConnectionMonitor } from './connection.js'
 import { setupHistoryWorker } from './history.js'
@@ -11,6 +11,7 @@ import { setupFileWorker } from './files.js'
 import { setupEditor } from './editor.js'
 import { setupContactsWorker } from './contacts.js'
 import { setupActionWorkers } from './actions.js'
+import { setupRefreshMessageWorker } from './refresh-message.js'
 
 console.log(`[tg-worker] starting ${APP_NAME}...`)
 
@@ -50,6 +51,13 @@ try {
   setupEditor(client)
   setupContactsWorker(client)
   setupActionWorkers(client)
+  setupRefreshMessageWorker(client)
+
+  // Prime TDLib's chat list — without this, `getChatHistory` on a freshly
+  // re-authenticated session fails with "Chat not found" for any chat that
+  // hasn't yet been touched by an updateNewMessage. Fire-and-forget so we
+  // don't block startup; chats become discoverable as loadChats progresses.
+  syncChats(client, 200).catch((e) => console.error('[tg-worker] initial syncChats failed:', e?.message ?? e))
 
   console.log('[tg-worker] ready — listening for messages...')
 } catch (err) {
