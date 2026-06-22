@@ -77,8 +77,13 @@ function resetFilters() {
 }
 
 const { requestOpen: requestOpenChat } = useChatNavigation()
-function openChat(id: string) {
-  navigateTo({ path: '/', query: { chat: id } })
+async function openChat(id: string) {
+  // Await the navigation so index.vue is mounted (and its pendingOpen watcher
+  // registered) BEFORE we fire requestOpen — otherwise the signal is set while
+  // we're still on /results and the not-yet-mounted watcher misses it. The
+  // immediate route.query.chat watcher alone no-ops when the clicked chat is
+  // already the active one in the persisted store, so some cards looked dead.
+  await navigateTo({ path: '/', query: { chat: id } })
   requestOpenChat(id)
 }
 
