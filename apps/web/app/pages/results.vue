@@ -76,8 +76,10 @@ function resetFilters() {
   q.value = ''; status.value = ''; manager.value = ''; range.value = null
 }
 
+const { requestOpen: requestOpenChat } = useChatNavigation()
 function openChat(id: string) {
   navigateTo({ path: '/', query: { chat: id } })
+  requestOpenChat(id)
 }
 
 function fmtDate(iso: string) {
