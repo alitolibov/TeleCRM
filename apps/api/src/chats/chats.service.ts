@@ -195,7 +195,24 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
         .values({ clientId: client.id, status: initialStatus })
         .returning()
       chat = newChat
-    } else if (chat.status === 'closed') {
+    } else {
+      // Duplicate guard: if this telegram_message_id already exists for this
+      // chat we've already processed this event once. Skip everything below
+      // (no reopen, no auto-distribute, no emit). This happens whenever
+      // TDLib redelivers backlog after a reconnect — without the guard each
+      // delayed echo re-reopened a closed chat and silently broke the cap.
+      const chatId = chat.id
+      const dup = await this.db.query.messages.findFirst({
+        where: (m, { and, eq }) => and(
+          eq(m.chatId, chatId),
+          eq(m.telegramMessageId, event.messageId),
+        ),
+        columns: { id: true },
+      })
+      if (dup) return
+    }
+
+    if (chat.status === 'closed') {
       // Reopen — manager already worked this lead, treat as 'active' (not 'new').
       //
       // EXCEPTION: if a client message reopens the chat AND the previous owner
