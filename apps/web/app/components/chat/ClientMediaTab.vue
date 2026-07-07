@@ -23,6 +23,7 @@ function thumbUrl(m: ClientMediaItem): string {
     m.content.fileId,
     m.content.remoteFileId,
     m.content.type,
+    m.id,
   )
 }
 

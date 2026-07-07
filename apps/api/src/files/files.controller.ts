@@ -1,14 +1,62 @@
-import { Controller, Get, Param, Query, Res, BadRequestException, NotFoundException } from '@nestjs/common'
+import { Controller, Get, Param, Query, Res, BadRequestException, NotFoundException, Inject } from '@nestjs/common'
 import { Response } from 'express'
 import * as fs from 'fs'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { FilesService } from './files.service'
+import { DRIZZLE } from '../db/drizzle.module'
+import * as schema from '../db/schema'
 
 @Controller('files')
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    @Inject(DRIZZLE) private db: NodePgDatabase<typeof schema>,
+  ) {}
 
-  // Public — file IDs are 64-bit TDLib internals, not enumerable from outside.
-  // Auth via URL token would break <img>/<audio> src loading without extra wiring.
+  /**
+   * Message-keyed URL: /files/m/<crm-message-uuid>. The URL never changes
+   * for a given message, so browser cache updates are correct even when the
+   * underlying TDLib fileId / remoteFileId change (heal script, re-auth,
+   * mirror mirror population). This is the CANONICAL endpoint; the legacy
+   * `/files/:fileId?r=&t=` stays for backwards compat but new frontend
+   * links use this one exclusively.
+   *
+   * Public: the CRM message uuid isn't enumerable from outside.
+   */
+  @Get('m/:messageId')
+  async getFileByMessage(
+    @Param('messageId') messageId: string,
+    @Res() res: Response,
+  ) {
+    const msg = await this.db.query.messages.findFirst({
+      where: (m, { eq }) => eq(m.id, messageId),
+      columns: { content: true },
+    })
+    if (!msg) throw new NotFoundException('message not found')
+    const c = msg.content as any
+    if (!c?.fileId) throw new NotFoundException('message has no file')
+
+    const path = await this.filesService.resolveFile(
+      Number(c.fileId),
+      c.remoteFileId ?? undefined,
+      c.type,
+    )
+    if (!path || !fs.existsSync(path)) throw new NotFoundException('file not ready')
+
+    // Message-keyed URLs are safe to cache aggressively — the URL is a
+    // stable pointer at the message and the message row can be updated
+    // in place. If content shifts (rare — mostly the heal script), a
+    // client-side reload still won't fetch, but the served path may be
+    // a fresh mirror file. Trade-off accepted for CDN-friendliness.
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
+
+    const mime = mimeForContentType(c.type)
+    const options = mime ? { headers: { 'Content-Type': mime } } : {}
+    return res.sendFile(path, options)
+  }
+
+  // Legacy — kept for browser cache entries created before the /m/:id
+  // switchover, plus any hard-coded external links.
   @Get(':fileId')
   async getFile(
     @Param('fileId') fileIdStr: string,
@@ -22,11 +70,8 @@ export class FilesController {
     const path = await this.filesService.resolveFile(fileId, remoteFileId, contentType as any)
     if (!path || !fs.existsSync(path)) throw new NotFoundException('file not ready')
 
-    // Cache aggressively — Telegram file content is immutable per file_id
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
 
-    // Explicit Content-Type — TDLib stores files with extensions Express may not
-    // map (e.g. .oga for voice), causing audio/video elements to refuse playback.
     const mime = mimeForContentType(contentType)
     const options = mime ? { headers: { 'Content-Type': mime } } : {}
     return res.sendFile(path, options)

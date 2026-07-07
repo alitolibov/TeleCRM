@@ -23,6 +23,7 @@ function downloadUrl(m: ClientFileItem): string {
     m.content.fileId,
     m.content.remoteFileId,
     m.content.type,
+    m.id,
   )
 }
 

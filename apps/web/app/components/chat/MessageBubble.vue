@@ -23,10 +23,15 @@ const config = useRuntimeConfig()
  *   · forwarded TG content carries a real `fileId` → served via /files (same
  *     endpoint normal chat photos use);
  *   · locally-uploaded favourites have no fileId → served via /favorites/files
- *     keyed by the favourite row id (= msg.id). */
+ *     keyed by the favourite row id (= msg.id).
+ *
+ * Real chat messages route through the message-uuid form so the URL never
+ * changes even when the underlying fileId / remoteFileId are healed. This
+ * also side-steps the browser cache poisoning that showed wrong images
+ * for hours after the old buggy fileId endpoint served them once. */
 const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string): string => {
   if (fileId) {
-    return buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType)
+    return buildFileUrl(config.public.apiUrl as string, fileId, remoteFileId, contentType, props.msg.id)
   }
   return `${config.public.apiUrl}/favorites/files/${props.msg.id}`
 }
