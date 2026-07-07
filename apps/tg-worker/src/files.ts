@@ -3,10 +3,45 @@ import type { Job } from 'bullmq'
 import type { TgFileRequestJob, TgFileResponse } from '@telecrm/shared'
 import { REDIS_QUEUES } from '@telecrm/shared'
 import { config } from './config.js'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 function buildRedisConnection() {
   const url = new URL(config.redis.url)
   return { host: url.hostname, port: Number(url.port) || 6379 }
+}
+
+/** Persistent media mirror — a snapshot of every successfully-resolved file
+ *  keyed by SHA-256(remoteFileId ?? "local:"+fileId). Survives TDLib chat
+ *  deletions and re-auth session churn. Both api and tg-worker mount the
+ *  same tdlib_data volume, so a file written here is immediately servable
+ *  via /files/:id from the api side. */
+const MEDIA_DIR = process.env.MEDIA_DIR ?? '/data/media'
+try { mkdirSync(MEDIA_DIR, { recursive: true }) } catch { /* ignore — /data might be read-only in dev */ }
+
+function mirrorKey(remoteFileId: string | undefined, fileId: number): string {
+  const seed = remoteFileId ?? `local:${fileId}`
+  return createHash('sha256').update(seed).digest('hex')
+}
+
+// Fixed extension per content type — never derived from TDLib's on-disk path,
+// so the fast-path guess (before download) and the post-download mirror path
+// are identical for a given (remoteFileId, contentType) pair.
+function mirrorExtFor(contentType: TgFileRequestJob['contentType']): string {
+  switch (contentType) {
+    case 'photo':     return '.jpg'
+    case 'video':     return '.mp4'
+    case 'videoNote': return '.mp4'
+    case 'voice':     return '.oga'
+    case 'sticker':   return '.webp'
+    case 'document':  return '.bin'
+    default:          return '.bin'
+  }
+}
+
+function mirrorPath(remoteFileId: string | undefined, fileId: number, contentType: TgFileRequestJob['contentType']): string {
+  return join(MEDIA_DIR, mirrorKey(remoteFileId, fileId) + mirrorExtFor(contentType))
 }
 
 /** Map our shared content-type strings to TDLib's FileType discriminated union. */
@@ -28,6 +63,16 @@ export function setupFileWorker(client: any) {
     async (job: Job<TgFileRequestJob, TgFileResponse>) => {
       const { fileId, remoteFileId, contentType } = job.data
       try {
+        // Fast path: we've already mirrored this file into our own storage,
+        // serve it straight from there — no TDLib round-trip, no chance of
+        // touching a stale local id, works even if TG has since deleted the
+        // source chat. Only miss when the file has never been resolved
+        // successfully before.
+        const mirror = mirrorPath(remoteFileId, fileId, contentType)
+        if (existsSync(mirror)) {
+          return { path: mirror }
+        }
+
         // Local file IDs are session-scoped and get reused across sessions.
         // Rule: if we have a stable remoteFileId we MUST resolve through it —
         // falling back to the URL's local id after a failed resolve is what
@@ -70,8 +115,19 @@ export function setupFileWorker(client: any) {
           synchronous: true,
         })
         const path = file?.local?.path ?? null
-        if (path) console.log(`[tg-worker] file ${actualFileId} → ${path}`)
-        return { path }
+        if (!path) return { path: null }
+
+        // Mirror to our own storage so subsequent requests bypass TDLib and
+        // survive chat-deletions / re-auths. Best-effort — a failed copy
+        // still lets us serve THIS request via the TDLib path.
+        try {
+          if (!existsSync(mirror)) copyFileSync(path, mirror)
+          console.log(`[tg-worker] file ${actualFileId} → ${path} (mirrored to ${mirror})`)
+          return { path: mirror }
+        } catch (e) {
+          console.warn(`[tg-worker] mirror copy failed for ${path}: ${(e as Error).message}`)
+          return { path }
+        }
       } catch (e) {
         console.error(`[tg-worker] download file ${fileId} failed:`, (e as Error).message)
         return { path: null }
