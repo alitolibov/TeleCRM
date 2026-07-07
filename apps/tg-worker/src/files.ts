@@ -28,9 +28,14 @@ export function setupFileWorker(client: any) {
     async (job: Job<TgFileRequestJob, TgFileResponse>) => {
       const { fileId, remoteFileId, contentType } = job.data
       try {
-        // Local file IDs are session-scoped and get reused across worker restarts.
-        // If we have a stable remote ID, resolve it to the current local ID first.
-        let actualFileId = fileId
+        // Local file IDs are session-scoped and get reused across sessions.
+        // Rule: if we have a stable remoteFileId we MUST resolve through it —
+        // falling back to the URL's local id after a failed resolve is what
+        // caused the "wrong photo in wrong chat" bug. TDLib reused id 12345
+        // for a different file after re-auth; serving that content pushed a
+        // random cached image into the caller's message. Failing loudly (404
+        // in the browser) is safer than serving mismatched media.
+        let actualFileId: number
         if (remoteFileId) {
           try {
             const remoteFile = await client.invoke({
@@ -40,10 +45,20 @@ export function setupFileWorker(client: any) {
               // pass the actual type derived from the message's content type.
               file_type: tdlibFileType(contentType),
             })
-            if (remoteFile?.id) actualFileId = remoteFile.id
+            if (!remoteFile?.id) {
+              console.warn(`[tg-worker] getRemoteFile returned no id for ${remoteFileId} — refusing to fall back to stale local id`)
+              return { path: null }
+            }
+            actualFileId = remoteFile.id
           } catch (e) {
-            console.warn(`[tg-worker] getRemoteFile failed for ${remoteFileId}, falling back to local id ${fileId}`)
+            console.warn(`[tg-worker] getRemoteFile failed for ${remoteFileId}: ${(e as Error).message} — NOT falling back to stale local id`)
+            return { path: null }
           }
+        } else {
+          // No remoteFileId in the message (legacy content or a fresh event
+          // where TDLib hadn't populated .remote yet). Trust the local id
+          // — for freshly-downloaded messages it's still valid this session.
+          actualFileId = fileId
         }
 
         const file = await client.invoke({
