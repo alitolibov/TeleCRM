@@ -50,7 +50,25 @@ export class FilesController {
     // a fresh mirror file. Trade-off accepted for CDN-friendliness.
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
 
-    const mime = mimeForContentType(c.type)
+    // Documents need the real MIME type from the message content (photo /
+    // video / voice have baked-in defaults handled below). Without this a
+    // PDF was going out as application/octet-stream and the browser
+    // downloaded it instead of previewing.
+    const docMime: string | null =
+      c.type === 'document' && typeof c.mimeType === 'string' ? c.mimeType : null
+    const mime = mimeForContentType(c.type) ?? docMime
+
+    // Documents also need a filename so the browser saves them with the
+    // original extension (otherwise the file drops onto disk as
+    // `<uuid>` with no extension and refuses to open). PDFs specifically
+    // get `inline` so the browser previews them in-tab instead of
+    // downloading; everything else goes `attachment` with the filename.
+    if (c.type === 'document' && typeof c.fileName === 'string' && c.fileName) {
+      const safeName = c.fileName.replace(/["\\\r\n]/g, '_')
+      const disposition = docMime === 'application/pdf' ? 'inline' : 'attachment'
+      res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(c.fileName)}`)
+    }
+
     const options = mime ? { headers: { 'Content-Type': mime } } : {}
     return res.sendFile(path, options)
   }
