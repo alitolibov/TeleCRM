@@ -41,6 +41,14 @@ export function useChatScroll(opts: {
     if (loadingOlder.value || historyExhausted.value || !opts.activeChatId.value) return
     if (el.scrollTop > 80) return
 
+    // Wait for the initial message batch to land. An empty message list has
+    // scrollTop=0 and scrollHeight<=clientHeight — indistinguishable from
+    // "user scrolled all the way up in a fully loaded chat". Without this
+    // guard, opening a chat via the optimistic path (messages briefly [])
+    // fires backfill on empty state, loadOlder returns 0, and we latch
+    // historyExhausted=true — scroll-up then never works for the session.
+    if (el.scrollHeight <= el.clientHeight) return
+
     loadingOlder.value = true
     const prevHeight = el.scrollHeight
     try {
