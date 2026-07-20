@@ -347,13 +347,22 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
     // if any. Covers both fresh `new` chats and `active` chats returned to the
     // queue (manual transfer to "no one", user-delete release) — both belong
     // to the same pool that needs picking up.
+    // An owned chat whose owner has gone offline counts as unowned here: the
+    // client is waiting for an answer nobody is there to give. Without this,
+    // ownership is sticky forever and messages keep landing on someone who
+    // left hours ago while online colleagues sit idle. Quiet chats are left
+    // alone — reassignment only happens when a client actually writes.
     let autoAssignedTo: string | null = null
-    if (!event.isOutgoing && !chat.assignedTo && chat.status !== 'closed') {
-      autoAssignedTo = await this.pickAssignee()
-      if (autoAssignedTo) {
-        await this.autoAssignChat(chat.id, autoAssignedTo, 'auto_distribute')
-        chat = { ...chat, assignedTo: autoAssignedTo }
-        console.log(`[api] auto-distributed chat ${chat.id} (${chat.status}) → user ${autoAssignedTo}`)
+    if (!event.isOutgoing && chat.status !== 'closed') {
+      const ownerOffline = chat.assignedTo ? await this.isUserOffline(chat.assignedTo) : false
+      if (!chat.assignedTo || ownerOffline) {
+        autoAssignedTo = await this.pickAssignee()
+        if (autoAssignedTo) {
+          const reason = ownerOffline ? 'auto_distribute_owner_offline' : 'auto_distribute'
+          await this.autoAssignChat(chat.id, autoAssignedTo, reason)
+          chat = { ...chat, assignedTo: autoAssignedTo }
+          console.log(`[api] auto-distributed chat ${chat.id} (${chat.status}, ${reason}) → user ${autoAssignedTo}`)
+        }
       }
     }
 
@@ -696,6 +705,17 @@ export class ChatsService implements OnModuleInit, OnModuleDestroy {
       LIMIT 1
     `)
     return result.rows[0]?.id ?? null
+  }
+
+  /** True when the user is not currently online (offline, or soft-deleted).
+   *  Presence lives in `users.status`, kept fresh by the heartbeat sweep. */
+  private async isUserOffline(userId: string): Promise<boolean> {
+    const row = await this.db.query.users.findFirst({
+      where: (u, { eq }) => eq(u.id, userId),
+      columns: { status: true, deletedAt: true },
+    })
+    if (!row) return true
+    return row.status !== 'online' || row.deletedAt !== null
   }
 
   /** Read the configurable per-user chat cap from `app_settings`. Falls back
