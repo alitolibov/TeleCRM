@@ -2,6 +2,7 @@ import { Controller, Get, Param, Query, Res, BadRequestException, NotFoundExcept
 import { Response } from 'express'
 import * as fs from 'fs'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { eq } from 'drizzle-orm'
 import { FilesService } from './files.service'
 import { DRIZZLE } from '../db/drizzle.module'
 import * as schema from '../db/schema'
@@ -30,17 +31,33 @@ export class FilesController {
   ) {
     const msg = await this.db.query.messages.findFirst({
       where: (m, { eq }) => eq(m.id, messageId),
-      columns: { content: true },
+      columns: { content: true, chatId: true, telegramMessageId: true },
     })
     if (!msg) throw new NotFoundException('message not found')
-    const c = msg.content as any
+    let c = msg.content as any
     if (!c?.fileId) throw new NotFoundException('message has no file')
 
-    const path = await this.filesService.resolveFile(
+    let path = await this.filesService.resolveFile(
       Number(c.fileId),
       c.remoteFileId ?? undefined,
       c.type,
     )
+
+    // A stale file_reference inside remoteFileId makes downloadFile fail while
+    // everything upstream looks healthy. Re-fetch the message to get a fresh
+    // reference, persist it, and retry once — otherwise the file stays dead
+    // forever and only a manual heal run could recover it.
+    if (!path || !fs.existsSync(path)) {
+      const healed = await this.healContent(messageId, msg.chatId, msg.telegramMessageId)
+      if (healed) {
+        c = healed
+        path = await this.filesService.resolveFile(
+          Number(c.fileId),
+          c.remoteFileId ?? undefined,
+          c.type,
+        )
+      }
+    }
     if (!path || !fs.existsSync(path)) throw new NotFoundException('file not ready')
 
     // Message-keyed URLs are safe to cache aggressively — the URL is a
@@ -93,6 +110,48 @@ export class FilesController {
     const mime = mimeForContentType(contentType)
     const options = mime ? { headers: { 'Content-Type': mime } } : {}
     return res.sendFile(path, options)
+  }
+
+  /**
+   * Asks TDLib for the message again and rewrites `content` with the fresh
+   * remoteFileId. Returns the new content, or null when nothing usable came
+   * back (message deleted in Telegram, chat gone, TDLib timeout).
+   *
+   * Only writes when the remoteFileId actually changed — a refresh that
+   * returns the same value means the reference wasn't the problem, and
+   * rewriting would just churn the row.
+   */
+  private async healContent(
+    messageId: string,
+    chatId: string,
+    telegramMessageId: number | string | null,
+  ): Promise<any | null> {
+    if (!telegramMessageId) return null
+
+    const chat = await this.db.query.chats.findFirst({
+      where: (t, { eq }) => eq(t.id, chatId),
+      columns: { clientId: true },
+    })
+    if (!chat) return null
+
+    const client = await this.db.query.clients.findFirst({
+      where: (t, { eq }) => eq(t.id, chat.clientId),
+      columns: { telegramId: true },
+    })
+    if (!client?.telegramId) return null
+
+    const fresh = await this.filesService.refreshContent(
+      Number(client.telegramId),
+      Number(telegramMessageId),
+    )
+    if (!fresh || !(fresh as any).remoteFileId) return null
+
+    await this.db
+      .update(schema.messages)
+      .set({ content: fresh })
+      .where(eq(schema.messages.id, messageId))
+
+    return fresh
   }
 }
 

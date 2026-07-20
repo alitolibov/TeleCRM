@@ -5,7 +5,10 @@ import { FilesController } from './files.controller'
 import { FilesService } from './files.service'
 
 @Module({
-  imports: [BullModule.registerQueue({ name: REDIS_QUEUES.tgFileRequest })],
+  imports: [
+    BullModule.registerQueue({ name: REDIS_QUEUES.tgFileRequest }),
+    BullModule.registerQueue({ name: REDIS_QUEUES.tgRefreshMessage }),
+  ],
   controllers: [FilesController],
   providers: [FilesService],
 })
