@@ -22,12 +22,54 @@ export function useChatScroll(opts: {
   const showScrollDown = ref(false)
   const newSinceUnscrolled = ref(0)
 
+  /** While true, any growth of the list keeps the viewport pinned to the
+   *  bottom. A single scrollToBottom() on open isn't enough: images and
+   *  voice players resolve their height afterwards, and late message
+   *  batches append — both push the content down and leave the user
+   *  staring at the middle of the conversation. Cleared as soon as the
+   *  user scrolls up on purpose. */
+  const stickToBottom = ref(true)
+
   function scrollToBottom(smooth = false) {
     const el = messagesEl.value
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
     newSinceUnscrolled.value = 0
+    stickToBottom.value = true
   }
+
+  /** Re-pin after content grew, unless the user has scrolled away or we're
+   *  prepending history (that path restores its own offset). */
+  function keepPinned() {
+    if (!stickToBottom.value || loadingOlder.value) return
+    const el = messagesEl.value
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }
+
+  let mutationObserver: MutationObserver | null = null
+
+  function onMediaLoad(e: Event) {
+    const t = e.target as HTMLElement | null
+    if (t && (t.tagName === 'IMG' || t.tagName === 'VIDEO' || t.tagName === 'AUDIO')) keepPinned()
+  }
+
+  // Observe both node insertions (late batches, realtime arrivals) and media
+  // that finishes loading — `load` doesn't bubble, so it's captured.
+  watch(messagesEl, (el, prev) => {
+    mutationObserver?.disconnect()
+    mutationObserver = null
+    prev?.removeEventListener('load', onMediaLoad, true)
+    if (!el) return
+    mutationObserver = new MutationObserver(keepPinned)
+    mutationObserver.observe(el, { childList: true, subtree: true })
+    el.addEventListener('load', onMediaLoad, true)
+  }, { immediate: true })
+
+  onBeforeUnmount(() => {
+    mutationObserver?.disconnect()
+    messagesEl.value?.removeEventListener('load', onMediaLoad, true)
+  })
 
   async function onScroll() {
     const el = messagesEl.value
@@ -36,6 +78,10 @@ export function useChatScroll(opts: {
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     showScrollDown.value = distanceFromBottom > 200
     if (distanceFromBottom < 80) newSinceUnscrolled.value = 0
+
+    // The user's own scrolling is what decides pinning. Backfill moves
+    // scrollTop programmatically, so don't let it unpin/repin.
+    if (!loadingOlder.value) stickToBottom.value = distanceFromBottom < 80
 
     // Backfill when user reaches the top
     if (loadingOlder.value || historyExhausted.value || !opts.activeChatId.value) return
@@ -84,6 +130,7 @@ export function useChatScroll(opts: {
   function resetForChat() {
     historyExhausted.value = false
     newSinceUnscrolled.value = 0
+    stickToBottom.value = true
   }
 
   return {
