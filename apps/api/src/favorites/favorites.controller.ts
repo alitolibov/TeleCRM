@@ -1,6 +1,6 @@
 import {
   BadRequestException, Body, Controller, Delete, Get, HttpCode, HttpStatus,
-  NotFoundException, Param, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors,
+  NotFoundException, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors,
 } from '@nestjs/common'
 import { FilesInterceptor } from '@nestjs/platform-express'
 import { memoryStorage } from 'multer'
@@ -9,7 +9,7 @@ import * as fs from 'fs'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
 import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { FavoritesService } from './favorites.service'
-import { CreateFavoriteDto, ListFavoritesDto } from './dto/favorite.dto'
+import { CreateFavoriteDto, ListFavoritesDto, UpdateFavoriteDto } from './dto/favorite.dto'
 
 @Controller('favorites')
 export class FavoritesController {
@@ -85,6 +85,16 @@ export class FavoritesController {
       )
     }
     return res.sendFile(media.path)
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id')
+  update(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Body() dto: UpdateFavoriteDto,
+  ) {
+    return this.service.update(user.id, id, dto)
   }
 
   @UseGuards(JwtAuthGuard)

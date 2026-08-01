@@ -1,4 +1,5 @@
 import type { Chat } from '~/stores/chats'
+import { FAVORITES_CHAT_ID } from '~/composables/useFavorites'
 
 /**
  * Wraps actions that an admin might perform on a chat owned by another manager
@@ -27,6 +28,10 @@ export function useAdminTakeoverGuard(opts?: {
    */
   function needsConfirmation(chat: Chat | null | undefined): boolean {
     if (!chat || !user.value) return false
+    // "Избранное" is a synthetic, private, per-user chat — there is nothing to
+    // own or take over. Without this it trips the "no owner" branch below and
+    // asks the admin to claim their own notes.
+    if (chat.id === FAVORITES_CHAT_ID) return false
     if (user.value.role !== 'admin') return false
     if (!chat.assignedUser) {
       // `new` chats are claimed via the existing TakeChatDialog on sendMessage.

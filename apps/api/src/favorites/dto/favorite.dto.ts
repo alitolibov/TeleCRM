@@ -13,6 +13,14 @@ export class CreateFavoriteDto {
   replyToId?: string
 }
 
+export class UpdateFavoriteDto {
+  /** New body — replaces `content.text` for notes, `content.caption` for media. */
+  @IsString()
+  @MinLength(1)
+  @MaxLength(4000)
+  text!: string
+}
+
 export class ListFavoritesDto {
   @IsOptional()
   @IsString()

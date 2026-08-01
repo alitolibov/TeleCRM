@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import BaseConfirmDialog from '~/components/BaseConfirmDialog.vue'
 
-defineProps<{ open: boolean }>()
+/** `local` = the entry lives only in the user's own favorites, so nothing
+ *  reaches Telegram — the warning copy has to say so. */
+defineProps<{ open: boolean; local?: boolean }>()
 defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'confirm'): void
@@ -19,6 +21,7 @@ defineEmits<{
     @update:open="$emit('update:open', $event)"
     @confirm="$emit('confirm')"
   >
-    Сообщение будет удалено и у клиента в Telegram.
+    <template v-if="local">Заметка будет удалена из избранного. Действие необратимо.</template>
+    <template v-else>Сообщение будет удалено и у клиента в Telegram.</template>
   </BaseConfirmDialog>
 </template>

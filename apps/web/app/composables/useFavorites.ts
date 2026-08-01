@@ -38,6 +38,9 @@ export function useFavorites() {
       isRead: true,
       createdAt: row.createdAt,
     }
+    // Favorites keep their edit stamp inside `content` (no dedicated column),
+    // so lift it to where MessageBubble looks for it.
+    if (row.content?.editedAt) msg.editedAt = row.content.editedAt
     if (row.source) {
       msg.forwardedFrom = {
         name: row.source.clientName,
@@ -81,6 +84,16 @@ export function useFavorites() {
     items.value = [...items.value, ...rows.map(toMessage)]
   }
 
+  /** Edit an entry in place — new text for notes, new caption for media. */
+  async function update(id: string, text: string) {
+    const row = await api<FavoriteRow>(`/favorites/${id}`, {
+      method: 'PATCH',
+      body: { text },
+    })
+    const next = toMessage(row)
+    items.value = items.value.map(m => (m.id === id ? next : m))
+  }
+
   async function remove(id: string) {
     await api(`/favorites/${id}`, { method: 'DELETE' })
     items.value = items.value.filter(m => m.id !== id)
@@ -91,5 +104,5 @@ export function useFavorites() {
     items.value = []
   }
 
-  return { items, loaded, loading, load, add, upload, remove, clear }
+  return { items, loaded, loading, load, add, upload, update, remove, clear }
 }

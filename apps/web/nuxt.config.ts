@@ -177,8 +177,8 @@ export default defineNuxtConfig({
   },
   runtimeConfig: {
     public: {
-      apiUrl: process.env.NUXT_PUBLIC_API_URL ?? 'http://localhost:3002',
-      wsUrl: process.env.NUXT_PUBLIC_WS_URL ?? 'http://localhost:3002',
+      apiUrl: process.env.NUXT_PUBLIC_API_URL ?? 'http://localhost:3000',
+      wsUrl: process.env.NUXT_PUBLIC_WS_URL ?? 'http://localhost:3000',
     },
   },
 })

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, desc, eq, lt } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { promises as fsp } from 'fs'
@@ -6,7 +6,7 @@ import { extname, join } from 'path'
 import { randomUUID } from 'crypto'
 import { DRIZZLE } from '../db/drizzle.module'
 import * as schema from '../db/schema'
-import type { CreateFavoriteDto } from './dto/favorite.dto'
+import type { CreateFavoriteDto, UpdateFavoriteDto } from './dto/favorite.dto'
 import { FAVORITES_DIR } from './storage'
 
 const DEFAULT_LIMIT = 50
@@ -149,6 +149,33 @@ export class FavoritesService {
       inserted.push(row)
     }
     return inserted
+  }
+
+  /**
+   * Edit an entry: text notes get a new `text`, media entries a new `caption`.
+   * Scoped by userId, so one user can never touch another's row.
+   *
+   * `editedAt` is stored inside `content` rather than as its own column —
+   * favorites already mirror the `messages.content` shape the client renders,
+   * so the "изменено" marker rides along for free without a migration.
+   */
+  async update(userId: string, id: string, dto: UpdateFavoriteDto) {
+    const row = await this.db.query.favorites.findFirst({
+      where: (f, { and, eq }) => and(eq(f.id, id), eq(f.userId, userId)),
+    })
+    if (!row) throw new NotFoundException('favorite not found')
+
+    const content = { ...(row.content as Record<string, unknown>) }
+    if (content.type === 'text') content.text = dto.text
+    else content.caption = dto.text
+    content.editedAt = new Date().toISOString()
+
+    const [updated] = await this.db
+      .update(schema.favorites)
+      .set({ content })
+      .where(and(eq(schema.favorites.id, id), eq(schema.favorites.userId, userId)))
+      .returning()
+    return updated
   }
 
   async remove(userId: string, id: string) {

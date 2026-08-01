@@ -219,6 +219,7 @@
 
     <DeleteMessageDialog
       :open="deleteDialog.open"
+      :local="isFavorites"
       @update:open="(v: boolean) => deleteDialog = { open: v, messageId: v ? deleteDialog.messageId : null }"
       @confirm="confirmDelete"
     />
@@ -320,6 +321,20 @@ watchEffect(() => {
   }
 })
 
+// Favorites are not a real chat — `useChats` edit/delete would POST to
+// /chats/favorites/… and 404. Route those two actions to the favorites API
+// instead; every other caller keeps the chat behaviour.
+function editAnyMessage(messageId: string, text: string) {
+  return isFavorites.value
+    ? favorites.update(messageId, text)
+    : editMessage(messageId, text)
+}
+function deleteAnyMessage(messageId: string) {
+  return isFavorites.value
+    ? favorites.remove(messageId)
+    : deleteMessage(messageId)
+}
+
 // === Edit / Delete / Reply state via composable ===
 const {
   editingMessage, replyingTo, deleteDialog, actionMenuPos, actionMenuMsg,
@@ -328,7 +343,7 @@ const {
   startReplying, cancelReplying,
   askDelete: askDeleteRaw, confirmDelete, onContextMenu,
   closeActionMenu,
-} = useMessageActions({ editMessage, deleteMessage })
+} = useMessageActions({ editMessage: editAnyMessage, deleteMessage: deleteAnyMessage })
 
 // === Admin takeover guard ===
 // Wraps actions that admin might perform on another manager's chat.
@@ -579,7 +594,7 @@ async function handleSend() {
   // (Editing never carries attachments.)
   if (editingMessage.value) {
     if (!body) return
-    await editMessage(editingMessage.value.id, body)
+    await editAnyMessage(editingMessage.value.id, body)
     cancelEditing()
     composerText.value = ''
     return
