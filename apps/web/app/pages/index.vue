@@ -557,7 +557,7 @@ async function onForwardPick(pick: ForwardPick) {
 // === Scroll state via composable ===
 const {
   messagesEl, loadingOlder, historyExhausted,
-  showScrollDown, newSinceUnscrolled,
+  showScrollDown, newSinceUnscrolled, stickToBottom,
   onScroll, scrollToBottom, resetForChat,
 } = useChatScroll({
   activeChatId: computed(() => activeChat.value?.id ?? null),
@@ -873,6 +873,9 @@ async function jumpToMessage(messageId: string) {
   }
 
   if (!el) return
+  // Drop bottom-pinning BEFORE the jump: a media load firing mid-scroll would
+  // otherwise re-anchor to the bottom and cancel the navigation.
+  stickToBottom.value = false
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   el.classList.add('msg-flash')
   setTimeout(() => el?.classList.remove('msg-flash'), 1200)

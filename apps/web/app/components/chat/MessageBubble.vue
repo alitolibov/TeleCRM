@@ -36,6 +36,25 @@ const fileUrl = (fileId: number, remoteFileId?: string, contentType?: string): s
   return `${config.public.apiUrl}/favorites/files/${props.msg.id}`
 }
 
+/**
+ * Pre-computed photo box from the TG-provided width/height, so the bubble
+ * occupies its FINAL size before a single image byte arrives. Without this,
+ * lazy photos render ~0px tall, the open-chat scrollToBottom anchors against
+ * the collapsed layout, and the viewport ends up stranded mid-history once
+ * they load. Mirrors .media-wrap's max-width (320) and .media-img's
+ * max-height (380). Favorites uploads carry no dimensions → null → the
+ * scroll composable's media-load re-pin covers them instead.
+ */
+const photoBox = computed(() => {
+  const c = props.msg.content
+  if (c?.type !== 'photo' || !c.width || !c.height) return null
+  const scale = Math.min(320 / c.width, 380 / c.height, 1)
+  return {
+    wrap: { width: `${Math.round(c.width * scale)}px` },
+    img: { aspectRatio: `${c.width} / ${c.height}` },
+  }
+})
+
 function formatForwardTime(iso: string): string {
   const d = new Date(iso)
   const now = new Date()
@@ -172,12 +191,13 @@ function replyPreview(target: ChatMessage): string {
     </template>
 
     <template v-else-if="msg.content?.type === 'photo'">
-      <a :href="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)" target="_blank" rel="noopener" class="media-wrap">
+      <a :href="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)" target="_blank" rel="noopener" class="media-wrap" :style="photoBox?.wrap">
         <img
           :src="fileUrl(msg.content.fileId, msg.content.remoteFileId, msg.content.type)"
           :alt="msg.content.caption || 'photo'"
           loading="lazy"
           class="media-img"
+          :style="photoBox?.img"
         />
         <span class="bubble-meta-overlay">{{ formatMessageTime(msg.createdAt) }}<span v-if="bubbleStatus" class="bubble-status" :class="bubbleStatus.cls"><i v-for="(ic, i) in bubbleStatus.icons" :key="i" class="pi" :class="ic" /></span></span>
       </a>

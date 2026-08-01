@@ -22,12 +22,50 @@ export function useChatScroll(opts: {
   const showScrollDown = ref(false)
   const newSinceUnscrolled = ref(0)
 
+  /**
+   * "Pinned to the latest message" mode. The one-shot scrollToBottom on chat
+   * open fires after nextTick — when the DOM exists but images/videos haven't
+   * loaded yet. Media without reserved height then grows the content and the
+   * viewport ends up stranded mid-history. While this flag is on, every late
+   * media load re-pins the scroll to the bottom; any real scroll away from
+   * the bottom (in onScroll) switches it off, so reading history is never
+   * yanked around.
+   */
+  const stickToBottom = ref(true)
+
   function scrollToBottom(smooth = false) {
     const el = messagesEl.value
     if (!el) return
+    stickToBottom.value = true
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
     newSinceUnscrolled.value = 0
   }
+
+  // <img>/<video> load events don't bubble, but they ARE observable on an
+  // ancestor in the capture phase — one pair of listeners on the scroll
+  // container catches every media element inside it, present and future.
+  function onMediaSettled() {
+    const el = messagesEl.value
+    if (!el || !stickToBottom.value) return
+    el.scrollTop = el.scrollHeight
+  }
+  watch(messagesEl, (el, prev) => {
+    if (prev) {
+      prev.removeEventListener('load', onMediaSettled, true)
+      prev.removeEventListener('loadedmetadata', onMediaSettled, true)
+    }
+    if (el) {
+      el.addEventListener('load', onMediaSettled, true)
+      el.addEventListener('loadedmetadata', onMediaSettled, true)
+    }
+  })
+  onUnmounted(() => {
+    const el = messagesEl.value
+    if (el) {
+      el.removeEventListener('load', onMediaSettled, true)
+      el.removeEventListener('loadedmetadata', onMediaSettled, true)
+    }
+  })
 
   async function onScroll() {
     const el = messagesEl.value
@@ -35,6 +73,9 @@ export function useChatScroll(opts: {
 
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     showScrollDown.value = distanceFromBottom > 200
+    // Track stickiness off the user's actual position: scrolled away → stop
+    // re-pinning on media loads; back at the bottom → resume following.
+    stickToBottom.value = distanceFromBottom < 80
     if (distanceFromBottom < 80) newSinceUnscrolled.value = 0
 
     // Backfill when user reaches the top
@@ -84,6 +125,10 @@ export function useChatScroll(opts: {
   function resetForChat() {
     historyExhausted.value = false
     newSinceUnscrolled.value = 0
+    // A fresh chat always opens at the latest message — pin immediately so
+    // media that loads during the initial render already re-anchors, without
+    // waiting for the explicit scrollToBottom that follows.
+    stickToBottom.value = true
   }
 
   return {
@@ -92,6 +137,7 @@ export function useChatScroll(opts: {
     historyExhausted,
     showScrollDown,
     newSinceUnscrolled,
+    stickToBottom,
     onScroll,
     scrollToBottom,
     resetForChat,
